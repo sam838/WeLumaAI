@@ -1,0 +1,50 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // User Profile Document (/users/{userId})
+    match /users/{userId} {
+      allow get, list: if isOwner(userId);
+      allow create, update: if isOwner(userId);
+      allow delete: if isOwner(userId);
+
+      // User-isolated Journal Interactions
+      match /interactions/{interactionId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(interactionId);
+        allow delete: if isOwner(userId) && isValidId(interactionId);
+      }
+
+      // User-isolated Routines
+      match /routines/{routineId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(routineId);
+        allow delete: if isOwner(userId) && isValidId(routineId);
+      }
+
+      // User-isolated Activity Preferences & Saved Activities
+      match /activities/{activityId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(activityId);
+        allow delete: if isOwner(userId) && isValidId(activityId);
+      }
+    }
+  }
+}

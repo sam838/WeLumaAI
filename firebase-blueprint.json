@@ -1,0 +1,66 @@
+{
+  "entities": {
+    "JournalInteraction": {
+      "title": "JournalInteraction",
+      "description": "A user-authored journaling reflection session containing multi-turn dialogue with Gemini.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique session identifier",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "userId": {
+          "type": "string",
+          "description": "The authenticated owner UID",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "The title or topic of the reflection session",
+          "maxLength": 200
+        },
+        "mode": {
+          "type": "string",
+          "description": "The reflection mode (reflection, summary, brainstorm)",
+          "enum": ["reflection", "summary", "brainstorm"]
+        },
+        "messages": {
+          "type": "array",
+          "description": "Multi-turn conversation history between user and Gemini model"
+        },
+        "summary": {
+          "type": "string",
+          "description": "AI-generated executive reflection summary",
+          "maxLength": 1000
+        },
+        "themes": {
+          "type": "array",
+          "description": "Extracted thematic tags or keywords"
+        },
+        "modelUsed": {
+          "type": "string",
+          "description": "The Gemini model name used for generation",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "number",
+          "description": "Unix timestamp when reflection was started"
+        },
+        "updatedAt": {
+          "type": "number",
+          "description": "Unix timestamp when reflection was last modified"
+        }
+      },
+      "required": ["id", "userId", "title", "mode", "messages", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/interactions/{interactionId}": {
+      "schema": "JournalInteraction",
+      "description": "User-isolated subcollection storing private reflections and Gemini AI dialogue turns."
+    }
+  }
+}

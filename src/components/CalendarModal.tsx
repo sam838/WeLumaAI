@@ -1,0 +1,1260 @@
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  Calendar as CalendarIcon,
+  Clock,
+  Plus,
+  ChevronLeft,
+  ChevronRight,
+  Sparkles,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  Trash2,
+  RefreshCw,
+  AlertCircle,
+  Check,
+  X,
+  Tag,
+  ListTodo,
+  CalendarDays,
+  ShieldCheck,
+  Video,
+  MapPin,
+  BellRing
+} from "lucide-react";
+import { GoogleCalendarEvent, CalendarReminderInput, CalendarSyncState } from "../types";
+import {
+  getStoredToken,
+  requestGoogleCalendarAuth,
+  clearStoredToken,
+  fetchTodayEventsFromApi,
+  fetchMonthEventsFromApi,
+  createGoogleCalendarEvent,
+  deleteGoogleCalendarEvent,
+  getLocalReminders,
+  saveLocalReminders,
+  generateDefaultMindfulSchedule,
+} from "../googleCalendar";
+
+interface CalendarModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  onInsertEventToJournal?: (event: GoogleCalendarEvent) => void;
+  initialTab?: "today" | "full" | "create";
+}
+
+const MONTH_NAMES = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"
+];
+
+const DAYS_OF_WEEK = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const EVENT_COLORS: { [key: string]: { bg: string; text: string; border: string; label: string } } = {
+  default: { bg: "bg-[#C89B3C]/15", text: "text-[#C89B3C]", border: "border-[#C89B3C]/40", label: "Gold Accent" },
+  "1": { bg: "bg-[#738F85]/20", text: "text-[#8CAEA2]", border: "border-[#738F85]/40", label: "Sage Green" },
+  "2": { bg: "bg-emerald-500/15", text: "text-emerald-300", border: "border-emerald-500/40", label: "Mindfulness" },
+  "5": { bg: "bg-amber-500/15", text: "text-amber-300", border: "border-amber-500/40", label: "Important" },
+  "11": { bg: "bg-rose-500/15", text: "text-rose-300", border: "border-rose-500/40", label: "Focus / Urgent" },
+};
+
+export const CalendarModal: React.FC<CalendarModalProps> = ({
+  isOpen,
+  onClose,
+  onInsertEventToJournal,
+  initialTab = "today",
+}) => {
+  const [activeTab, setActiveTab] = useState<"today" | "full" | "create">("today");
+  const [syncState, setSyncState] = useState<CalendarSyncState>({
+    isConnected: false,
+    isConnecting: false,
+    accessToken: null,
+    expiresAt: null,
+    error: null,
+  });
+
+  // Calendar State
+  const [currentDate, setCurrentDate] = useState<Date>(new Date());
+  const [selectedDay, setSelectedDay] = useState<Date>(new Date());
+  const [events, setEvents] = useState<GoogleCalendarEvent[]>([]);
+  const [isLoadingEvents, setIsLoadingEvents] = useState<boolean>(false);
+  const [eventFilter, setEventFilter] = useState<"all" | "reminders" | "meetings">("all");
+  const [completedTaskIds, setCompletedTaskIds] = useState<{ [id: string]: boolean }>({});
+
+  // New Event Form State
+  const [newTitle, setNewTitle] = useState("");
+  const [newDescription, setNewDescription] = useState("");
+  const [newStartDate, setNewStartDate] = useState(new Date().toISOString().split("T")[0]);
+  const [newStartTime, setNewStartTime] = useState("09:00");
+  const [newEndTime, setNewEndTime] = useState("10:00");
+  const [newIsAllDay, setNewIsAllDay] = useState(false);
+  const [newColorId, setNewColorId] = useState("default");
+  const [isSubmittingEvent, setIsSubmittingEvent] = useState(false);
+  const [formSuccessMessage, setFormSuccessMessage] = useState<string | null>(null);
+
+  // Selected event detail modal/popover
+  const [viewingEvent, setViewingEvent] = useState<GoogleCalendarEvent | null>(null);
+
+  // Quick reminder preset feedback
+  const [quickPresetSuccess, setQuickPresetSuccess] = useState<string | null>(null);
+
+  // 1. Initialize authentication state on load
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+    const token = getStoredToken();
+    if (token) {
+      setSyncState({
+        isConnected: true,
+        isConnecting: false,
+        accessToken: token,
+        expiresAt: null,
+        error: null,
+      });
+    } else {
+      // Load local sample / stored fallback
+      const locals = getLocalReminders();
+      if (locals.length > 0) {
+        setEvents(locals);
+      } else {
+        const defaults = generateDefaultMindfulSchedule();
+        setEvents(defaults);
+        saveLocalReminders(defaults);
+      }
+    }
+  }, [initialTab]);
+
+  // 2. Fetch Events when token or viewing month changes
+  const loadEvents = useCallback(async () => {
+    const token = syncState.accessToken || getStoredToken();
+    if (!token) {
+      const locals = getLocalReminders();
+      setEvents(locals.length > 0 ? locals : generateDefaultMindfulSchedule());
+      return;
+    }
+
+    setIsLoadingEvents(true);
+    setSyncState((prev) => ({ ...prev, error: null }));
+    try {
+      if (activeTab === "today") {
+        const todayEvts = await fetchTodayEventsFromApi(token, new Date());
+        setEvents(todayEvts);
+      } else {
+        const monthEvts = await fetchMonthEventsFromApi(
+          token,
+          currentDate.getFullYear(),
+          currentDate.getMonth()
+        );
+        setEvents(monthEvts);
+      }
+    } catch (err: any) {
+      console.error("Error fetching calendar events:", err);
+      setSyncState((prev) => ({
+        ...prev,
+        error: err.message || "Failed to sync with Google Calendar.",
+        isConnected: !err.message?.includes("expired"),
+      }));
+      // Fallback to local
+      const locals = getLocalReminders();
+      if (locals.length > 0) setEvents(locals);
+    } finally {
+      setIsLoadingEvents(false);
+    }
+  }, [syncState.accessToken, activeTab, currentDate]);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadEvents();
+    }
+  }, [isOpen, loadEvents]);
+
+  // Handle Connect to Google Calendar
+  const handleConnectCalendar = async () => {
+    setSyncState((prev) => ({ ...prev, isConnecting: true, error: null }));
+    try {
+      const authResult = await requestGoogleCalendarAuth();
+      setSyncState({
+        isConnected: true,
+        isConnecting: false,
+        accessToken: authResult.accessToken,
+        expiresAt: Date.now() + authResult.expiresIn * 1000,
+        error: null,
+      });
+      // Immediately load fresh events from Google Calendar
+      setIsLoadingEvents(true);
+      const fetched = await fetchTodayEventsFromApi(authResult.accessToken, new Date());
+      setEvents(fetched);
+    } catch (err: any) {
+      console.error("OAuth connection failed:", err);
+      setSyncState((prev) => ({
+        ...prev,
+        isConnecting: false,
+        error: err.message || "Could not connect to Google Calendar. Please allow popups.",
+      }));
+    } finally {
+      setIsLoadingEvents(false);
+    }
+  };
+
+  const handleDisconnect = () => {
+    clearStoredToken();
+    setSyncState({
+      isConnected: false,
+      isConnecting: false,
+      accessToken: null,
+      expiresAt: null,
+      error: null,
+    });
+    const defaults = generateDefaultMindfulSchedule();
+    setEvents(defaults);
+  };
+
+  // Handle Create Event / Reminder
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newTitle.trim()) return;
+
+    setIsSubmittingEvent(true);
+    setFormSuccessMessage(null);
+
+    const startIso = newIsAllDay
+      ? `${newStartDate}T00:00:00.000Z`
+      : `${newStartDate}T${newStartTime}:00.000Z`;
+    const endIso = newIsAllDay
+      ? `${newStartDate}T23:59:59.000Z`
+      : `${newStartDate}T${newEndTime}:00.000Z`;
+
+    const input: CalendarReminderInput = {
+      title: newTitle.trim(),
+      description: newDescription.trim(),
+      startTime: startIso,
+      endTime: endIso,
+      isAllDay: newIsAllDay,
+      colorId: newColorId !== "default" ? newColorId : undefined,
+    };
+
+    try {
+      const token = syncState.accessToken || getStoredToken();
+      if (token && syncState.isConnected) {
+        const created = await createGoogleCalendarEvent(token, input);
+        setEvents((prev) => [created, ...prev]);
+        setFormSuccessMessage("Event added to your Google Calendar!");
+      } else {
+        // Local creation
+        const localEvt: GoogleCalendarEvent = {
+          id: `local-evt-${Date.now()}`,
+          summary: input.title,
+          description: input.description,
+          start: newIsAllDay ? { date: newStartDate } : { dateTime: startIso },
+          end: newIsAllDay ? { date: newStartDate } : { dateTime: endIso },
+          isTaskReminder: true,
+          colorId: input.colorId || "default",
+          status: "confirmed",
+        };
+        const updated = [localEvt, ...events];
+        setEvents(updated);
+        saveLocalReminders(updated);
+        setFormSuccessMessage("Reminder saved to your daily schedule!");
+      }
+
+      // Reset Form
+      setNewTitle("");
+      setNewDescription("");
+      setTimeout(() => {
+        setFormSuccessMessage(null);
+        setActiveTab("today");
+      }, 1200);
+    } catch (err: any) {
+      console.error("Failed to create event:", err);
+      setSyncState((prev) => ({ ...prev, error: err.message || "Failed to create event." }));
+    } finally {
+      setIsSubmittingEvent(false);
+    }
+  };
+
+  // Quick Preset Add
+  const handleAddMindfulPreset = async (presetType: "morning" | "midday" | "evening") => {
+    const todayStr = new Date().toISOString().split("T")[0];
+    let title = "";
+    let desc = "";
+    let startTime = "";
+    let endTime = "";
+    let colorId = "default";
+
+    if (presetType === "morning") {
+      title = "🌅 Morning Intention & Gratitude Journaling";
+      desc = "Focus on what matters most today, write 3 gratitudes, and center your morning mind.";
+      startTime = `${todayStr}T08:30:00.000Z`;
+      endTime = `${todayStr}T08:45:00.000Z`;
+      colorId = "2";
+    } else if (presetType === "midday") {
+      title = "🧘 Midday Reset & Grounding Break";
+      desc = "Step away from work, breathe mindfully, and reset mental energy.";
+      startTime = `${todayStr}T13:00:00.000Z`;
+      endTime = `${todayStr}T13:15:00.000Z`;
+      colorId = "5";
+    } else {
+      title = "📖 Evening Deep Journal Reflection with Gemini";
+      desc = "Review today's thoughts, emotions, and lessons with AI reflection guidance.";
+      startTime = `${todayStr}T20:30:00.000Z`;
+      endTime = `${todayStr}T21:00:00.000Z`;
+      colorId = "1";
+    }
+
+    const input: CalendarReminderInput = {
+      title,
+      description: desc,
+      startTime,
+      endTime,
+      colorId,
+    };
+
+    try {
+      const token = syncState.accessToken || getStoredToken();
+      if (token && syncState.isConnected) {
+        const created = await createGoogleCalendarEvent(token, input);
+        setEvents((prev) => [created, ...prev]);
+      } else {
+        const localEvt: GoogleCalendarEvent = {
+          id: `local-evt-${Date.now()}`,
+          summary: title,
+          description: desc,
+          start: { dateTime: startTime },
+          end: { dateTime: endTime },
+          isTaskReminder: true,
+          colorId,
+          status: "confirmed",
+        };
+        const updated = [localEvt, ...events];
+        setEvents(updated);
+        saveLocalReminders(updated);
+      }
+      setQuickPresetSuccess(`Added: "${title.split(" ")[1]}..."`);
+      setTimeout(() => setQuickPresetSuccess(null), 3000);
+    } catch (err: any) {
+      console.error("Error adding preset reminder:", err);
+      setSyncState((prev) => ({ ...prev, error: err.message || "Failed to add preset reminder." }));
+    }
+  };
+
+  // Handle Delete Event
+  const handleDelete = async (eventId: string) => {
+    try {
+      const token = syncState.accessToken || getStoredToken();
+      if (token && syncState.isConnected && !eventId.startsWith("local-") && !eventId.startsWith("demo-")) {
+        await deleteGoogleCalendarEvent(token, eventId);
+      }
+      const updated = events.filter((e) => e.id !== eventId);
+      setEvents(updated);
+      saveLocalReminders(updated);
+      if (viewingEvent?.id === eventId) {
+        setViewingEvent(null);
+      }
+    } catch (err: any) {
+      console.error("Error deleting event:", err);
+      setSyncState((prev) => ({ ...prev, error: err.message || "Failed to delete event." }));
+    }
+  };
+
+  const toggleTaskCompletion = (id: string) => {
+    setCompletedTaskIds((prev) => ({
+      ...prev,
+      [id]: !prev[id],
+    }));
+  };
+
+  // Calendar Day Grid Computation
+  const calendarDays = useMemo(() => {
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+
+    const firstDayOfMonth = new Date(year, month, 1);
+    const lastDayOfMonth = new Date(year, month + 1, 0);
+
+    const daysInMonth = lastDayOfMonth.getDate();
+    const startingDayOfWeek = firstDayOfMonth.getDay(); // 0 for Sunday
+
+    const days = [];
+
+    // Previous month padding days
+    const prevMonthLastDay = new Date(year, month, 0).getDate();
+    for (let i = startingDayOfWeek - 1; i >= 0; i--) {
+      days.push({
+        date: new Date(year, month - 1, prevMonthLastDay - i),
+        isCurrentMonth: false,
+      });
+    }
+
+    // Current month days
+    for (let d = 1; d <= daysInMonth; d++) {
+      days.push({
+        date: new Date(year, month, d),
+        isCurrentMonth: true,
+      });
+    }
+
+    // Next month padding days to complete 35 or 42 grid cells
+    const remaining = (7 - (days.length % 7)) % 7;
+    for (let d = 1; d <= remaining; d++) {
+      days.push({
+        date: new Date(year, month + 1, d),
+        isCurrentMonth: false,
+      });
+    }
+
+    return days;
+  }, [currentDate]);
+
+  // Today's events filter
+  const todayEvents = useMemo(() => {
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+
+    return events.filter((e) => {
+      const startStr = e.start.dateTime || e.start.date || "";
+      return startStr.startsWith(todayStr) || (startStr === "" && activeTab === "today");
+    });
+  }, [events, activeTab]);
+
+  // Events on selected day
+  const selectedDayEvents = useMemo(() => {
+    const selStr = `${selectedDay.getFullYear()}-${String(selectedDay.getMonth() + 1).padStart(2, "0")}-${String(selectedDay.getDate()).padStart(2, "0")}`;
+    return events.filter((e) => {
+      const startStr = e.start.dateTime || e.start.date || "";
+      return startStr.startsWith(selStr);
+    });
+  }, [events, selectedDay]);
+
+  // Formatted date string helpers
+  const formatEventTime = (evt: GoogleCalendarEvent) => {
+    if (evt.start.date) return "All Day";
+    if (!evt.start.dateTime) return "Anytime";
+    try {
+      const d = new Date(evt.start.dateTime);
+      return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } catch {
+      return "Scheduled";
+    }
+  };
+
+  const isSameDay = (d1: Date, d2: Date) => {
+    return (
+      d1.getFullYear() === d2.getFullYear() &&
+      d1.getMonth() === d2.getMonth() &&
+      d1.getDate() === d2.getDate()
+    );
+  };
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 md:p-6">
+      <div className="w-full max-w-5xl bg-[#211E1B] rounded-3xl border border-[#38322D] shadow-2xl flex flex-col max-h-[92vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+        {/* Modal Top Bar */}
+        <div className="px-5 sm:px-7 py-4 border-b border-[#38322D] flex items-center justify-between bg-[#171513]/70 shrink-0">
+          <div className="flex items-center space-x-3">
+            <div className="w-10 h-10 rounded-2xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shadow-xs">
+              <CalendarIcon className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center space-x-2">
+                <h2 className="text-lg sm:text-xl font-serif font-bold text-[#F3EFE8]">
+                  Google Calendar & Daily Reminders
+                </h2>
+                {syncState.isConnected ? (
+                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#6E9A7B]/15 text-[#6E9A7B] border border-[#6E9A7B]/30">
+                    <ShieldCheck className="w-3 h-3" />
+                    <span>OAuth Synced</span>
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#38322D] text-[#B7AFA7]">
+                    <span>Local Mode</span>
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-[#B7AFA7]">
+                Track daily tasks, plan reflection sessions, and inspect your full calendar schedule
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {/* Refresh / Reconnect Button */}
+            <button
+              onClick={loadEvents}
+              disabled={isLoadingEvents}
+              className="p-2 rounded-xl bg-[#171513] border border-[#38322D] text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+              title="Refresh calendar events"
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoadingEvents ? "animate-spin text-[#C89B3C]" : ""}`} />
+            </button>
+
+            {/* Close Button */}
+            <button
+              onClick={onClose}
+              className="p-2 rounded-xl text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+              aria-label="Close Calendar"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* OAuth Integration Banner */}
+        <div className="px-5 sm:px-7 py-2.5 bg-[#171513] border-b border-[#38322D] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-xs">
+          <div className="flex items-center space-x-2 text-[#B7AFA7]">
+            {syncState.isConnected ? (
+              <span className="flex items-center space-x-1.5 text-[#6E9A7B]">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Connected to Google Calendar</span>
+              </span>
+            ) : (
+              <span className="flex items-center space-x-1.5 text-[#C89B3C]">
+                <BellRing className="w-3.5 h-3.5" />
+                <span>Connect your Google Calendar to sync reminders and events live</span>
+              </span>
+            )}
+          </div>
+
+          <div className="flex items-center space-x-2">
+            {syncState.isConnected ? (
+              <button
+                type="button"
+                onClick={handleDisconnect}
+                className="text-[11px] text-[#B7AFA7] hover:text-rose-300 underline transition-colors cursor-pointer"
+              >
+                Disconnect
+              </button>
+            ) : (
+              <button
+                id="btn-connect-gcal"
+                type="button"
+                onClick={handleConnectCalendar}
+                disabled={syncState.isConnecting}
+                className="inline-flex items-center space-x-1.5 px-3 py-1 bg-[#C89B3C] hover:bg-[#b98c2d] disabled:opacity-50 text-[#171513] font-semibold rounded-lg text-xs transition-colors shadow-2xs cursor-pointer"
+              >
+                {syncState.isConnecting ? (
+                  <>
+                    <div className="w-3 h-3 border-2 border-[#171513] border-t-transparent rounded-full animate-spin" />
+                    <span>Connecting OAuth...</span>
+                  </>
+                ) : (
+                  <>
+                    <CalendarIcon className="w-3.5 h-3.5" />
+                    <span>Connect Google Calendar</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Global Error Banner */}
+        {syncState.error && (
+          <div className="px-5 py-2 bg-[#B86B6B]/20 border-b border-[#B86B6B]/40 text-[#F3EFE8] text-xs flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <AlertCircle className="w-4 h-4 text-[#B86B6B] shrink-0" />
+              <span>{syncState.error}</span>
+            </div>
+            <button
+              onClick={() => setSyncState((prev) => ({ ...prev, error: null }))}
+              className="text-[#B7AFA7] hover:text-[#F3EFE8]"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
+        {/* Success toast for preset */}
+        {quickPresetSuccess && (
+          <div className="px-5 py-2 bg-[#6E9A7B]/20 border-b border-[#6E9A7B]/40 text-[#F3EFE8] text-xs flex items-center space-x-2 animate-fade-in">
+            <Check className="w-4 h-4 text-[#6E9A7B]" />
+            <span>{quickPresetSuccess}</span>
+          </div>
+        )}
+
+        {/* Tab Navigation Header */}
+        <div className="px-5 sm:px-7 pt-3 border-b border-[#38322D] flex items-center justify-between bg-[#211E1B]">
+          <div className="flex space-x-2 sm:space-x-4">
+            <button
+              id="tab-cal-today"
+              onClick={() => setActiveTab("today")}
+              className={`pb-3 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-all flex items-center space-x-2 cursor-pointer ${
+                activeTab === "today"
+                  ? "border-[#C89B3C] text-[#C89B3C] font-semibold"
+                  : "border-transparent text-[#B7AFA7] hover:text-[#F3EFE8]"
+              }`}
+            >
+              <ListTodo className="w-4 h-4" />
+              <span>Today's Tasks & Reminders</span>
+              <span className="px-1.5 py-0.2 rounded-full bg-[#171513] text-[10px] text-[#B7AFA7] border border-[#38322D]">
+                {todayEvents.length}
+              </span>
+            </button>
+
+            <button
+              id="tab-cal-full"
+              onClick={() => setActiveTab("full")}
+              className={`pb-3 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-all flex items-center space-x-2 cursor-pointer ${
+                activeTab === "full"
+                  ? "border-[#C89B3C] text-[#C89B3C] font-semibold"
+                  : "border-transparent text-[#B7AFA7] hover:text-[#F3EFE8]"
+              }`}
+            >
+              <CalendarDays className="w-4 h-4" />
+              <span>Full Calendar View</span>
+            </button>
+
+            <button
+              id="tab-cal-create"
+              onClick={() => setActiveTab("create")}
+              className={`pb-3 px-2 sm:px-3 text-xs sm:text-sm font-medium border-b-2 transition-all flex items-center space-x-2 cursor-pointer ${
+                activeTab === "create"
+                  ? "border-[#C89B3C] text-[#C89B3C] font-semibold"
+                  : "border-transparent text-[#B7AFA7] hover:text-[#F3EFE8]"
+              }`}
+            >
+              <Plus className="w-4 h-4" />
+              <span>New Event / Reminder</span>
+            </button>
+          </div>
+
+          {/* Quick Presets Dropdown / Buttons */}
+          <div className="hidden sm:flex items-center space-x-1.5 pb-2">
+            <span className="text-[11px] text-[#B7AFA7] mr-1">Quick Add:</span>
+            <button
+              onClick={() => handleAddMindfulPreset("morning")}
+              className="px-2 py-1 rounded-md bg-[#171513] border border-[#38322D] hover:border-[#C89B3C]/50 text-[#F3EFE8] text-[11px] font-medium transition-colors cursor-pointer"
+              title="Add Morning Intention reminder"
+            >
+              🌅 Morning
+            </button>
+            <button
+              onClick={() => handleAddMindfulPreset("midday")}
+              className="px-2 py-1 rounded-md bg-[#171513] border border-[#38322D] hover:border-[#C89B3C]/50 text-[#F3EFE8] text-[11px] font-medium transition-colors cursor-pointer"
+              title="Add Midday Reset reminder"
+            >
+              🧘 Midday
+            </button>
+            <button
+              onClick={() => handleAddMindfulPreset("evening")}
+              className="px-2 py-1 rounded-md bg-[#171513] border border-[#38322D] hover:border-[#C89B3C]/50 text-[#F3EFE8] text-[11px] font-medium transition-colors cursor-pointer"
+              title="Add Evening Reflection reminder"
+            >
+              📖 Evening
+            </button>
+          </div>
+        </div>
+
+        {/* Modal Main Body */}
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 text-[#F3EFE8]">
+          {/* TAB 1: TODAY'S TASKS & REMINDERS */}
+          {activeTab === "today" && (
+            <div className="space-y-6">
+              {/* Daily Overview Card */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-[#171513] border border-[#38322D] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div className="space-y-1">
+                  <div className="flex items-center space-x-2">
+                    <Clock className="w-4 h-4 text-[#C89B3C]" />
+                    <span className="text-xs font-semibold uppercase tracking-wider text-[#C89B3C]">
+                      Today's Schedule & Check-ins
+                    </span>
+                  </div>
+                  <h3 className="text-base sm:text-lg font-serif font-bold text-[#F3EFE8]">
+                    {new Date().toLocaleDateString(undefined, {
+                      weekday: "long",
+                      month: "long",
+                      day: "numeric",
+                      year: "numeric",
+                    })}
+                  </h3>
+                  <p className="text-xs text-[#B7AFA7]">
+                    You have <strong className="text-[#F3EFE8]">{todayEvents.length}</strong> items scheduled today. Check off completed mindfulness habits or reflect on them with Gemini.
+                  </p>
+                </div>
+
+                <div className="flex items-center space-x-2 shrink-0">
+                  <button
+                    onClick={() => setActiveTab("create")}
+                    className="inline-flex items-center space-x-1.5 px-3.5 py-2 bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] font-semibold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add Task / Reminder</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Events & Task List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-[#B7AFA7] px-1">
+                  <span className="font-semibold uppercase tracking-wider text-[11px]">Timeline & Reminders</span>
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => setEventFilter("all")}
+                      className={`px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
+                        eventFilter === "all" ? "bg-[#38322D] text-[#F3EFE8]" : "hover:text-[#F3EFE8]"
+                      }`}
+                    >
+                      All ({todayEvents.length})
+                    </button>
+                    <button
+                      onClick={() => setEventFilter("reminders")}
+                      className={`px-2 py-0.5 rounded text-[11px] transition-colors cursor-pointer ${
+                        eventFilter === "reminders" ? "bg-[#38322D] text-[#F3EFE8]" : "hover:text-[#F3EFE8]"
+                      }`}
+                    >
+                      Mindful Reminders
+                    </button>
+                  </div>
+                </div>
+
+                {todayEvents.length === 0 ? (
+                  <div className="text-center py-12 px-4 rounded-2xl bg-[#171513] border border-[#38322D] space-y-3">
+                    <div className="w-12 h-12 rounded-2xl bg-[#C89B3C]/10 border border-[#C89B3C]/20 text-[#C89B3C] flex items-center justify-center mx-auto">
+                      <Clock className="w-6 h-6" />
+                    </div>
+                    <h4 className="text-sm font-semibold text-[#F3EFE8]">No events scheduled for today</h4>
+                    <p className="text-xs text-[#B7AFA7] max-w-sm mx-auto">
+                      Your calendar is open today! Add a mindful intention, reflection check-in, or sync with your Google Calendar above.
+                    </p>
+                    <div className="pt-2 flex justify-center gap-2">
+                      <button
+                        onClick={() => handleAddMindfulPreset("morning")}
+                        className="px-3 py-1.5 bg-[#2c2723] hover:bg-[#36302b] text-[#F3EFE8] rounded-xl text-xs font-medium border border-[#38322D] cursor-pointer"
+                      >
+                        + Add Morning Intention
+                      </button>
+                      <button
+                        onClick={() => handleAddMindfulPreset("evening")}
+                        className="px-3 py-1.5 bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] rounded-xl text-xs font-semibold cursor-pointer"
+                      >
+                        + Add Evening Reflection
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {todayEvents
+                      .filter((evt) => {
+                        if (eventFilter === "reminders") return evt.isTaskReminder;
+                        return true;
+                      })
+                      .map((evt) => {
+                        const isDone = completedTaskIds[evt.id];
+                        const colorStyle = EVENT_COLORS[evt.colorId || "default"] || EVENT_COLORS.default;
+
+                        return (
+                          <div
+                            key={evt.id}
+                            className={`p-4 rounded-2xl border transition-all flex items-start justify-between gap-3 bg-[#171513] ${
+                              isDone
+                                ? "border-[#38322D]/60 opacity-60"
+                                : "border-[#38322D] hover:border-[#C89B3C]/50 shadow-xs"
+                            }`}
+                          >
+                            <div className="flex items-start space-x-3.5 flex-1 min-w-0">
+                              {/* Checkbox toggle */}
+                              <button
+                                type="button"
+                                onClick={() => toggleTaskCompletion(evt.id)}
+                                className="mt-0.5 text-[#B7AFA7] hover:text-[#C89B3C] transition-colors cursor-pointer shrink-0"
+                                title={isDone ? "Mark as active" : "Mark as completed"}
+                              >
+                                {isDone ? (
+                                  <CheckCircle2 className="w-5 h-5 text-[#6E9A7B]" />
+                                ) : (
+                                  <Circle className="w-5 h-5" />
+                                )}
+                              </button>
+
+                              <div className="flex-1 min-w-0 space-y-1">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span
+                                    className={`text-sm font-semibold ${
+                                      isDone ? "line-through text-[#B7AFA7]" : "text-[#F3EFE8]"
+                                    }`}
+                                  >
+                                    {evt.summary}
+                                  </span>
+
+                                  <span
+                                    className={`px-2 py-0.5 rounded-full text-[10px] font-medium border ${colorStyle.bg} ${colorStyle.text} ${colorStyle.border}`}
+                                  >
+                                    {formatEventTime(evt)}
+                                  </span>
+
+                                  {evt.isTaskReminder && (
+                                    <span className="px-1.5 py-0.5 rounded text-[9px] uppercase tracking-wider bg-[#38322D] text-[#B7AFA7]">
+                                      Reminder
+                                    </span>
+                                  )}
+                                </div>
+
+                                {evt.description && (
+                                  <p className="text-xs text-[#B7AFA7] line-clamp-2 leading-relaxed">
+                                    {evt.description}
+                                  </p>
+                                )}
+
+                                <div className="flex flex-wrap items-center gap-3 pt-1 text-[11px] text-[#B7AFA7]">
+                                  {evt.location && (
+                                    <span className="flex items-center space-x-1">
+                                      <MapPin className="w-3 h-3 text-[#C89B3C]" />
+                                      <span className="truncate max-w-[160px]">{evt.location}</span>
+                                    </span>
+                                  )}
+                                  {evt.hangoutLink && (
+                                    <a
+                                      href={evt.hangoutLink}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="flex items-center space-x-1 text-[#738F85] hover:underline"
+                                    >
+                                      <Video className="w-3 h-3" />
+                                      <span>Join Video Call</span>
+                                    </a>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            {/* Action Buttons */}
+                            <div className="flex items-center space-x-1 shrink-0">
+                              {onInsertEventToJournal && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onInsertEventToJournal(evt);
+                                    onClose();
+                                  }}
+                                  className="px-2.5 py-1.5 rounded-xl bg-[#2c2723] hover:bg-[#38322D] text-[#F3EFE8] text-xs font-medium border border-[#38322D] transition-colors flex items-center space-x-1 cursor-pointer"
+                                  title="Reflect on this event in Journal Editor"
+                                >
+                                  <Sparkles className="w-3 h-3 text-[#C89B3C]" />
+                                  <span className="hidden sm:inline">Reflect</span>
+                                </button>
+                              )}
+
+                              {evt.htmlLink && (
+                                <a
+                                  href={evt.htmlLink}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors"
+                                  title="Open in Google Calendar"
+                                >
+                                  <ExternalLink className="w-4 h-4" />
+                                </a>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(evt.id)}
+                                className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-rose-400 hover:bg-[#2c2723] transition-colors cursor-pointer"
+                                title="Delete task"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: FULL CALENDAR VIEW */}
+          {activeTab === "full" && (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Left 7 Cols: Monthly Calendar Grid */}
+              <div className="lg:col-span-7 space-y-4">
+                {/* Month Navigator */}
+                <div className="flex items-center justify-between bg-[#171513] p-3 rounded-2xl border border-[#38322D]">
+                  <div className="flex items-center space-x-3">
+                    <h3 className="text-base sm:text-lg font-serif font-bold text-[#F3EFE8]">
+                      {MONTH_NAMES[currentDate.getMonth()]} {currentDate.getFullYear()}
+                    </h3>
+                    <button
+                      onClick={() => {
+                        const now = new Date();
+                        setCurrentDate(now);
+                        setSelectedDay(now);
+                      }}
+                      className="px-2 py-0.5 rounded-md bg-[#2c2723] border border-[#38322D] text-[11px] font-medium text-[#B7AFA7] hover:text-[#F3EFE8] cursor-pointer"
+                    >
+                      Today
+                    </button>
+                  </div>
+
+                  <div className="flex items-center space-x-1">
+                    <button
+                      onClick={() => {
+                        setCurrentDate(
+                          new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
+                        );
+                      }}
+                      className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+                      title="Previous Month"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => {
+                        setCurrentDate(
+                          new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1)
+                        );
+                      }}
+                      className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+                      title="Next Month"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Days of Week Headers */}
+                <div className="grid grid-cols-7 gap-1 text-center text-xs font-semibold text-[#B7AFA7] py-1">
+                  {DAYS_OF_WEEK.map((d) => (
+                    <div key={d}>{d}</div>
+                  ))}
+                </div>
+
+                {/* 35/42 Days Grid */}
+                <div className="grid grid-cols-7 gap-1">
+                  {calendarDays.map((dayItem, idx) => {
+                    const isSelected = isSameDay(dayItem.date, selectedDay);
+                    const isToday = isSameDay(dayItem.date, new Date());
+
+                    // Find events for this cell
+                    const dayStr = `${dayItem.date.getFullYear()}-${String(dayItem.date.getMonth() + 1).padStart(2, "0")}-${String(dayItem.date.getDate()).padStart(2, "0")}`;
+                    const dayEvts = events.filter((e) => {
+                      const start = e.start.dateTime || e.start.date || "";
+                      return start.startsWith(dayStr);
+                    });
+
+                    return (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setSelectedDay(dayItem.date)}
+                        className={`min-h-[64px] sm:min-h-[76px] p-1.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-[#2c2723] border-[#C89B3C] shadow-md ring-1 ring-[#C89B3C]"
+                            : dayItem.isCurrentMonth
+                            ? "bg-[#171513] border-[#38322D] hover:border-[#B7AFA7]/60"
+                            : "bg-[#171513]/40 border-[#38322D]/40 opacity-40 hover:opacity-70"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span
+                            className={`text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full ${
+                              isToday
+                                ? "bg-[#C89B3C] text-[#171513]"
+                                : isSelected
+                                ? "text-[#C89B3C]"
+                                : dayItem.isCurrentMonth
+                                ? "text-[#F3EFE8]"
+                                : "text-[#B7AFA7]"
+                            }`}
+                          >
+                            {dayItem.date.getDate()}
+                          </span>
+
+                          {dayEvts.length > 0 && (
+                            <span className="text-[9px] px-1 rounded bg-[#38322D] text-[#B7AFA7] font-mono">
+                              {dayEvts.length}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Tiny Event Pills */}
+                        <div className="w-full space-y-0.5 overflow-hidden">
+                          {dayEvts.slice(0, 2).map((ev) => (
+                            <div
+                              key={ev.id}
+                              className="text-[9px] truncate px-1 py-0.5 rounded bg-[#C89B3C]/10 text-[#C89B3C] leading-none"
+                            >
+                              {ev.summary}
+                            </div>
+                          ))}
+                          {dayEvts.length > 2 && (
+                            <div className="text-[8px] text-[#B7AFA7] text-right">
+                              +{dayEvts.length - 2} more
+                            </div>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Right 5 Cols: Selected Date Detailed Agenda */}
+              <div className="lg:col-span-5 space-y-4">
+                <div className="p-4 sm:p-5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between">
+                  <div>
+                    <span className="text-[11px] font-semibold text-[#C89B3C] uppercase tracking-wider">
+                      Selected Day Agenda
+                    </span>
+                    <h4 className="text-base font-serif font-bold text-[#F3EFE8]">
+                      {selectedDay.toLocaleDateString(undefined, {
+                        weekday: "short",
+                        month: "short",
+                        day: "numeric",
+                        year: "numeric",
+                      })}
+                    </h4>
+                  </div>
+
+                  <button
+                    onClick={() => {
+                      setNewStartDate(selectedDay.toISOString().split("T")[0]);
+                      setActiveTab("create");
+                    }}
+                    className="p-2 rounded-xl bg-[#2c2723] hover:bg-[#38322D] border border-[#38322D] text-[#C89B3C] transition-colors cursor-pointer"
+                    title="Add event on this day"
+                  >
+                    <Plus className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Selected Day Events List */}
+                <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
+                  {selectedDayEvents.length === 0 ? (
+                    <div className="text-center py-10 px-4 rounded-2xl bg-[#171513] border border-[#38322D] space-y-2">
+                      <p className="text-xs text-[#B7AFA7]">No events scheduled for this date.</p>
+                      <button
+                        onClick={() => {
+                          setNewStartDate(selectedDay.toISOString().split("T")[0]);
+                          setActiveTab("create");
+                        }}
+                        className="text-xs text-[#C89B3C] hover:underline font-medium cursor-pointer"
+                      >
+                        + Create a task or reminder
+                      </button>
+                    </div>
+                  ) : (
+                    selectedDayEvents.map((evt) => {
+                      const colorStyle = EVENT_COLORS[evt.colorId || "default"] || EVENT_COLORS.default;
+                      return (
+                        <div
+                          key={evt.id}
+                          className="p-3.5 rounded-xl bg-[#171513] border border-[#38322D] hover:border-[#C89B3C]/40 transition-colors space-y-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <h5 className="text-xs sm:text-sm font-semibold text-[#F3EFE8] line-clamp-1">
+                              {evt.summary}
+                            </h5>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-medium border shrink-0 ${colorStyle.bg} ${colorStyle.text} ${colorStyle.border}`}
+                            >
+                              {formatEventTime(evt)}
+                            </span>
+                          </div>
+
+                          {evt.description && (
+                            <p className="text-xs text-[#B7AFA7] line-clamp-2 leading-relaxed">
+                              {evt.description}
+                            </p>
+                          )}
+
+                          <div className="flex items-center justify-between pt-1 border-t border-[#38322D]/60 text-xs">
+                            <span className="text-[11px] text-[#B7AFA7]">
+                              {evt.isTaskReminder ? "Mindful Reminder" : "Calendar Event"}
+                            </span>
+                            <div className="flex items-center space-x-2">
+                              {onInsertEventToJournal && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onInsertEventToJournal(evt);
+                                    onClose();
+                                  }}
+                                  className="text-[11px] text-[#C89B3C] hover:underline font-medium cursor-pointer flex items-center space-x-1"
+                                >
+                                  <Sparkles className="w-3 h-3" />
+                                  <span>Reflect</span>
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => handleDelete(evt.id)}
+                                className="text-[11px] text-rose-400 hover:text-rose-300 transition-colors cursor-pointer"
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: CREATE NEW EVENT OR REMINDER */}
+          {activeTab === "create" && (
+            <div className="max-w-2xl mx-auto py-2">
+              <form onSubmit={handleCreateEvent} className="space-y-4">
+                <div className="space-y-1">
+                  <h3 className="text-base font-serif font-bold text-[#F3EFE8]">
+                    Schedule a New Task or Event
+                  </h3>
+                  <p className="text-xs text-[#B7AFA7]">
+                    {syncState.isConnected
+                      ? "This will sync directly to your primary Google Calendar with 10-minute and 30-minute reminder notifications."
+                      : "Create a local reminder or connect your Google Calendar above to push directly to Google Cloud."}
+                  </p>
+                </div>
+
+                {formSuccessMessage && (
+                  <div className="p-3 rounded-xl bg-[#6E9A7B]/20 border border-[#6E9A7B]/50 text-[#F3EFE8] text-xs flex items-center space-x-2">
+                    <Check className="w-4 h-4 text-[#6E9A7B]" />
+                    <span>{formSuccessMessage}</span>
+                  </div>
+                )}
+
+                {/* Event Title */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-[#F3EFE8]">
+                    Event or Reminder Title <span className="text-rose-400">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    placeholder="e.g. 🧘 Midday Mindful Walking & Reflection..."
+                    className="w-full px-3.5 py-2.5 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] font-medium placeholder-[#B7AFA7]/60 focus:border-[#C89B3C] focus:ring-1 focus:ring-[#C89B3C]/40 outline-none text-sm"
+                  />
+                </div>
+
+                {/* Date & All Day Row */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1 sm:col-span-2">
+                    <label className="block text-xs font-semibold text-[#F3EFE8]">Date</label>
+                    <input
+                      type="date"
+                      required
+                      value={newStartDate}
+                      onChange={(e) => setNewStartDate(e.target.value)}
+                      className="w-full px-3.5 py-2 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] text-xs outline-none focus:border-[#C89B3C]"
+                    />
+                  </div>
+
+                  <div className="space-y-1 flex flex-col justify-end">
+                    <label className="flex items-center space-x-2 text-xs text-[#F3EFE8] cursor-pointer pb-2">
+                      <input
+                        type="checkbox"
+                        checked={newIsAllDay}
+                        onChange={(e) => setNewIsAllDay(e.target.checked)}
+                        className="rounded bg-[#171513] border-[#38322D] text-[#C89B3C] focus:ring-0"
+                      />
+                      <span>All Day Event</span>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Times (if not all day) */}
+                {!newIsAllDay && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="block text-xs font-semibold text-[#F3EFE8]">Start Time</label>
+                      <input
+                        type="time"
+                        value={newStartTime}
+                        onChange={(e) => setNewStartTime(e.target.value)}
+                        className="w-full px-3.5 py-2 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] text-xs outline-none focus:border-[#C89B3C]"
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="block text-xs font-semibold text-[#F3EFE8]">End Time</label>
+                      <input
+                        type="time"
+                        value={newEndTime}
+                        onChange={(e) => setNewEndTime(e.target.value)}
+                        className="w-full px-3.5 py-2 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] text-xs outline-none focus:border-[#C89B3C]"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Description */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-[#F3EFE8]">
+                    Description & Reflection Notes
+                  </label>
+                  <textarea
+                    rows={3}
+                    value={newDescription}
+                    onChange={(e) => setNewDescription(e.target.value)}
+                    placeholder="Add context, intentions, or things to review during this reminder..."
+                    className="w-full px-3.5 py-2.5 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] text-xs placeholder-[#B7AFA7]/60 outline-none focus:border-[#C89B3C] resize-y leading-relaxed"
+                  />
+                </div>
+
+                {/* Color Category */}
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold text-[#F3EFE8]">
+                    Highlight Category Color
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    {Object.entries(EVENT_COLORS).map(([cid, style]) => (
+                      <button
+                        key={cid}
+                        type="button"
+                        onClick={() => setNewColorId(cid)}
+                        className={`px-3 py-1.5 rounded-xl text-xs font-medium border flex items-center space-x-1.5 cursor-pointer ${
+                          newColorId === cid
+                            ? "bg-[#C89B3C] text-[#171513] border-[#C89B3C] font-semibold"
+                            : "bg-[#171513] text-[#B7AFA7] border-[#38322D] hover:border-[#B7AFA7]"
+                        }`}
+                      >
+                        <Tag className="w-3 h-3" />
+                        <span>{style.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Submit Buttons */}
+                <div className="pt-3 flex items-center justify-end space-x-3 border-t border-[#38322D]">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("today")}
+                    className="px-4 py-2 text-xs font-medium text-[#B7AFA7] hover:text-[#F3EFE8] cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={isSubmittingEvent || !newTitle.trim()}
+                    className="inline-flex items-center space-x-1.5 px-5 py-2 bg-[#C89B3C] hover:bg-[#b98c2d] disabled:opacity-50 text-[#171513] font-semibold rounded-xl text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    {isSubmittingEvent ? (
+                      <>
+                        <div className="w-3.5 h-3.5 border-2 border-[#171513] border-t-transparent rounded-full animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Plus className="w-4 h-4" />
+                        <span>Save to Calendar</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};

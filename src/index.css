@@ -1,0 +1,55 @@
+@import "tailwindcss";
+
+@theme {
+  --color-app-bg: #171513;
+  --color-app-surface: #211E1B;
+  --color-app-surface-hover: #2c2723;
+  --color-app-surface-active: #36302b;
+  --color-app-text-primary: #F3EFE8;
+  --color-app-text-secondary: #B7AFA7;
+  --color-app-text-muted: #8c847d;
+  --color-app-accent-gold: #C89B3C;
+  --color-app-accent-gold-hover: #b98c2d;
+  --color-app-accent-sage: #738F85;
+  --color-app-accent-sage-hover: #637e74;
+  --color-app-border: #38322D;
+  --color-app-border-hover: #4e463f;
+  --color-app-success: #6E9A7B;
+  --color-app-danger: #B86B6B;
+}
+
+:root {
+  --bg-color: #171513;
+  --surface-color: #211E1B;
+  --text-primary: #F3EFE8;
+  --text-secondary: #B7AFA7;
+  --accent-gold: #C89B3C;
+  --accent-sage: #738F85;
+  --border-color: #38322D;
+  --success-color: #6E9A7B;
+  --danger-color: #B86B6B;
+}
+
+html, body {
+  background-color: #171513;
+  color: #F3EFE8;
+}
+
+/* Custom scrollbar styling in the new palette */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #171513;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #38322D;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4e463f;
+}
