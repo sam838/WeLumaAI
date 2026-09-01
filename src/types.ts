@@ -35,11 +35,27 @@ export interface UsageMetadata {
   fallbackUsed?: boolean;
 }
 
+export interface SuggestedActivityItem {
+  id?: string;
+  title: string;
+  description: string;
+  durationMinutes: number;
+  domain: WellbeingDomain;
+  reason?: string;
+  suggestedTiming?: string;
+  targetDate?: string; // YYYY-MM-DD
+  targetTime?: string; // HH:mm (24-hour format)
+  targetDateTimeISO?: string;
+  needsDateClarification?: boolean;
+  scheduledEventId?: string;
+}
+
 export interface JournalMessage {
   id: string;
   role: "user" | "model";
   text: string;
   timestamp: number;
+  suggestedActivities?: SuggestedActivityItem[];
 }
 
 export interface JournalInteraction {
@@ -78,6 +94,20 @@ export interface StoredPreferenceItem {
   createdAt: number;
 }
 
+export interface LocationTimezoneInfo {
+  timezone: string; // e.g. "America/Los_Angeles", "Asia/Jakarta", "Europe/London"
+  utcOffset: string; // e.g. "UTC-07:00", "UTC+07:00"
+  formattedOffsetHours?: number; // e.g. -7 or 7
+  city?: string;
+  region?: string;
+  country?: string;
+  countryCode?: string;
+  latitude?: number;
+  longitude?: number;
+  source: "gps" | "ip" | "browser_timezone" | "manual";
+  detectedAt?: number;
+}
+
 export interface UserProfile {
   name?: string;
   dob?: string;
@@ -89,6 +119,8 @@ export interface UserProfile {
   photoURL?: string;
   religion?: string;
   culturalBeliefs?: string;
+  timezone?: string;
+  locationInfo?: LocationTimezoneInfo;
   primaryGoals?: string[];
   groundingActivities?: string[];
   activityPreferences?: {
@@ -149,9 +181,11 @@ export interface WellbeingActivity {
   energyRequired: "low" | "medium" | "high";
   durationMinutes: number;
   tags: string[];
+  suggestedTiming?: string;
   locationType?: "home" | "outdoors" | "venue";
   feedback?: ActivityFeedbackType;
   isSaved?: boolean;
+  isCustomAiGenerated?: boolean;
   updatedAt?: number;
 }
 

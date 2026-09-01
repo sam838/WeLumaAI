@@ -1,6 +1,6 @@
 {
   "name": "Gemini Journal & Reflections",
-  "description": "User-authenticated multi-turn journaling and AI reflection app with Cloud Firestore persistence and Gemini 3.6 Flash.",
-  "requestFramePermissions": [],
+  "description": "User-authenticated multi-turn journaling and AI reflection app with Cloud Firestore persistence, GPS location/timezone detection, and Gemini 3.6 Flash.",
+  "requestFramePermissions": ["geolocation"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

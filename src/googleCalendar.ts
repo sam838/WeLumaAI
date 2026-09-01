@@ -165,6 +165,48 @@ export async function fetchTodayEventsFromApi(
   return (data.items || []).map((it: any) => formatApiEvent(it));
 }
 
+// 1b. Fetch This Week's Events & Activities
+export async function fetchWeekEventsFromApi(
+  token: string,
+  referenceDate?: Date
+): Promise<GoogleCalendarEvent[]> {
+  const target = referenceDate || new Date();
+  const day = target.getDay();
+  // Get start of week (Sunday or Monday, let's do Sunday)
+  const startOfWeek = new Date(target);
+  startOfWeek.setDate(target.getDate() - day);
+  startOfWeek.setHours(0, 0, 0, 0);
+
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 7);
+  endOfWeek.setHours(23, 59, 59, 999);
+
+  const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=${encodeURIComponent(
+    startOfWeek.toISOString()
+  )}&timeMax=${encodeURIComponent(
+    endOfWeek.toISOString()
+  )}&singleEvents=true&orderBy=startTime&maxResults=100`;
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    if (res.status === 401) {
+      clearStoredToken();
+      throw new Error("Calendar authentication expired. Please reconnect.");
+    }
+    const errText = await res.text();
+    throw new Error(`Google Calendar API error (${res.status}): ${errText}`);
+  }
+
+  const data = await res.json();
+  return (data.items || []).map((it: any) => formatApiEvent(it));
+}
+
 // 2. Fetch Full Calendar Month Events
 export async function fetchMonthEventsFromApi(
   token: string,

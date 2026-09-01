@@ -30,6 +30,7 @@ interface PlannerViewProps {
   onDeleteRoutine: (routineId: string) => Promise<void>;
   onToggleRoutine: (routineId: string) => void;
   onNavigate: (tab: NavigationTab) => void;
+  onOpenCalendarModal?: () => void;
 }
 
 const DOMAIN_OPTIONS: { id: WellbeingDomain; label: string }[] = [
@@ -46,6 +47,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   onDeleteRoutine,
   onToggleRoutine,
   onNavigate,
+  onOpenCalendarModal,
 }) => {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
@@ -373,35 +375,54 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
           {/* Right Column (5 cols): Connected Calendar Status Card */}
           <div className="lg:col-span-5 space-y-6">
-            {/* Google Calendar Preview Card (Directive 18 preview) */}
+            {/* Google Calendar Action Layer Card */}
             <div className="bg-[#211E1B] border border-[#38322D] rounded-3xl p-5 sm:p-6 space-y-4 shadow-md">
-              <div className="flex items-center space-x-2.5 pb-2 border-b border-[#38322D]">
-                <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C]">
-                  <Calendar className="w-4 h-4" />
+              <div className="flex items-center justify-between pb-2 border-b border-[#38322D]">
+                <div className="flex items-center space-x-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C]">
+                    <Calendar className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h2 className="text-sm font-bold text-[#F3EFE8] font-serif">
+                      Google Calendar Integration
+                    </h2>
+                    <p className="text-[11px] text-[#B7AFA7]">
+                      Bi-directional scheduling & weekly activities
+                    </p>
+                  </div>
                 </div>
-                <div>
-                  <h2 className="text-sm font-bold text-[#F3EFE8] font-serif">
-                    Google Calendar Action Layer
-                  </h2>
-                  <p className="text-[11px] text-[#B7AFA7]">
-                    Directive 18 & 19 Planning Preview
-                  </p>
-                </div>
+
+                {onOpenCalendarModal && (
+                  <button
+                    id="btn-planner-open-calendar"
+                    onClick={onOpenCalendarModal}
+                    className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] font-semibold text-xs transition-all shadow-xs cursor-pointer"
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    <span>Open Calendar Hub</span>
+                  </button>
+                )}
               </div>
 
               <div className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] space-y-3 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="text-[#B7AFA7]">Integration Status:</span>
-                  <span className="px-2 py-0.5 rounded-md bg-[#211E1B] text-[#738F85] border border-[#738F85]/40 font-mono text-[10px]">
-                    Phase 1 Standby
+                  <span className="px-2.5 py-0.5 rounded-md bg-[#6E9A7B]/15 text-[#6E9A7B] border border-[#6E9A7B]/40 font-mono text-[10px] font-semibold">
+                    Connected & Ready
                   </span>
                 </div>
                 <p className="text-[#B7AFA7] text-[11px] leading-relaxed">
-                  Calendar synchronization operates under least-privilege. In future phases, you will be able to preview and confirm upcoming sessions (such as badminton or walking intervals) before any schedule write.
+                  Your Google Calendar is enabled with read and event scheduling permissions. You can view your monthly events, schedule mindful routines, and let Gemini synthesize activity recommendations tailored to your schedule.
                 </p>
-                <div className="p-2.5 rounded-xl bg-[#211E1B] border border-[#38322D] text-[11px] text-[#C89B3C] flex items-center space-x-2">
-                  <Sparkles className="w-4 h-4 shrink-0" />
-                  <span>Transparent confirmation required for every scheduled event.</span>
+                <div className="flex items-center justify-between pt-1">
+                  <button
+                    id="btn-planner-goto-recommender"
+                    onClick={() => onNavigate("activities")}
+                    className="text-xs text-[#C89B3C] hover:underline font-semibold flex items-center gap-1 cursor-pointer"
+                  >
+                    <span>Get AI Activity Recommendations</span>
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             </div>

@@ -3,11 +3,15 @@ import {
   AuthUserState,
   DailyCheckInState,
   JournalInteraction,
+  JournalMessage,
+  JournalMode,
   MoodType,
   NavigationTab,
+  ReflectionDepth,
   StoredPreferenceItem,
   UserProfile,
   WellbeingActivity,
+  WellbeingDomain,
   WellbeingRoutine,
 } from "./types";
 import {
@@ -44,6 +48,7 @@ import { InsightsView } from "./views/InsightsView";
 import { ActivitiesView } from "./views/ActivitiesView";
 import { PlannerView } from "./views/PlannerView";
 import { ProfileView } from "./views/ProfileView";
+import { CalendarModal } from "./components/CalendarModal";
 
 export default function App() {
   // 1. Core State
@@ -52,6 +57,7 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<NavigationTab>("today");
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
+  const [calendarModalOpen, setCalendarModalOpen] = useState<boolean>(false);
 
   // 2. Data State
   const [interactions, setInteractions] = useState<JournalInteraction[]>([]);
@@ -66,6 +72,7 @@ export default function App() {
 
   // Status flags
   const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Pending save ref for retry
@@ -197,6 +204,126 @@ export default function App() {
   };
 
   // D. Journal Action Handlers
+  const handleSendMessage = useCallback(
+    async (
+      prompt: string,
+      mode: JournalMode,
+      depth: ReflectionDepth,
+      title: string,
+      domains: WellbeingDomain[] = ["mind"],
+      mood: MoodType | string = "reflective",
+      tags: string[] = []
+    ) => {
+      if (!currentUser?.uid) return;
+      setIsGenerating(true);
+      setSaveError(null);
+
+      const now = Date.now();
+      const currentEntry = interactions.find((it) => it.id === activeInteractionId) || null;
+      const entryId = currentEntry?.id || `entry_${now}_${Math.random().toString(36).slice(2, 7)}`;
+      let finalTitle = title.trim();
+      if (!finalTitle) {
+        finalTitle = currentEntry?.title || prompt.slice(0, 45) + (prompt.length > 45 ? "..." : "");
+      }
+
+      const userMsg: JournalMessage = {
+        id: `msg_u_${now}`,
+        role: "user",
+        text: prompt,
+        timestamp: now,
+      };
+
+      const existingMessages = currentEntry?.messages || [];
+      const updatedMessages = [...existingMessages, userMsg];
+
+      // Optimistically create/update entry in Firestore so user input is guaranteed saved
+      const baseEntry: JournalInteraction = {
+        id: entryId,
+        userId: currentUser.uid,
+        title: finalTitle,
+        rawText: currentEntry?.rawText ? `${currentEntry.rawText}\n\n${prompt}` : prompt,
+        mode,
+        depth,
+        domains: domains.length > 0 ? domains : currentEntry?.domains || ["mind"],
+        mood: mood || currentEntry?.mood || "reflective",
+        energy: currentEntry?.energy || 3,
+        stress: currentEntry?.stress || 2,
+        tags: tags.length > 0 ? tags : currentEntry?.tags || [],
+        messages: updatedMessages,
+        summary: currentEntry?.summary,
+        themes: currentEntry?.themes,
+        analysis: currentEntry?.analysis,
+        createdAt: currentEntry?.createdAt || now,
+        updatedAt: now,
+      };
+
+      pendingSaveRef.current = baseEntry;
+      setActiveInteractionId(entryId);
+      try {
+        await saveInteractionToFirestore(currentUser.uid, baseEntry);
+      } catch (err: any) {
+        console.warn("Optimistic save warning:", err);
+      }
+
+      try {
+        // Send request to Gemini Reflect & Converse API
+        const response = await fetch("/api/gemini/reflect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt,
+            style: mode,
+            depth,
+            entryTitle: finalTitle,
+            recentHistory: existingMessages.slice(-8).map((m) => ({
+              role: m.role,
+              text: m.text,
+            })),
+            userProfile: currentUser.profile,
+            clientNow: new Date().toISOString(),
+            clientTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+          }),
+        });
+
+        if (!response.ok) {
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || `Server responded with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        const modelMsg: JournalMessage = {
+          id: `msg_m_${Date.now()}`,
+          role: "model",
+          text: data.reply,
+          suggestedActivities: Array.isArray(data.suggestedActivities) && data.suggestedActivities.length > 0
+            ? data.suggestedActivities
+            : undefined,
+          timestamp: data.timestamp || Date.now(),
+        };
+
+        const finalizedEntry: JournalInteraction = {
+          ...baseEntry,
+          messages: [...updatedMessages, modelMsg],
+          summary: data.summary || baseEntry.summary,
+          themes: Array.isArray(data.themes) ? data.themes : baseEntry.themes,
+          analysis: data.analysis || baseEntry.analysis,
+          modelUsed: data.modelUsed,
+          updatedAt: Date.now(),
+        };
+
+        pendingSaveRef.current = finalizedEntry;
+        await saveInteractionToFirestore(currentUser.uid, finalizedEntry);
+        pendingSaveRef.current = null;
+      } catch (err: any) {
+        console.error("Gemini conversation error:", err);
+        setSaveError(err.message || "Failed to complete Gemini reflection. Your journal entry was safely preserved.");
+      } finally {
+        setIsGenerating(false);
+      }
+    },
+    [currentUser, activeInteractionId, interactions]
+  );
+
   const handleSaveInteraction = useCallback(
     async (entry: JournalInteraction) => {
       if (!currentUser?.uid) return;
@@ -219,6 +346,39 @@ export default function App() {
       }
     },
     [currentUser?.uid]
+  );
+
+  const handleUpdateTitle = useCallback(
+    (title: string) => {
+      if (!currentUser?.uid || !activeInteractionId) return;
+      const target = interactions.find((it) => it.id === activeInteractionId);
+      if (target) {
+        saveInteractionToFirestore(currentUser.uid, { ...target, title, updatedAt: Date.now() });
+      }
+    },
+    [currentUser?.uid, activeInteractionId, interactions]
+  );
+
+  const handleUpdateMode = useCallback(
+    (mode: JournalMode) => {
+      if (!currentUser?.uid || !activeInteractionId) return;
+      const target = interactions.find((it) => it.id === activeInteractionId);
+      if (target) {
+        saveInteractionToFirestore(currentUser.uid, { ...target, mode, updatedAt: Date.now() });
+      }
+    },
+    [currentUser?.uid, activeInteractionId, interactions]
+  );
+
+  const handleUpdateDepth = useCallback(
+    (depth: ReflectionDepth) => {
+      if (!currentUser?.uid || !activeInteractionId) return;
+      const target = interactions.find((it) => it.id === activeInteractionId);
+      if (target) {
+        saveInteractionToFirestore(currentUser.uid, { ...target, depth, updatedAt: Date.now() });
+      }
+    },
+    [currentUser?.uid, activeInteractionId, interactions]
   );
 
   const handleDeleteInteraction = useCallback(
@@ -375,6 +535,7 @@ export default function App() {
         onNavigate={setActiveTab}
         onSignOut={handleSignOut}
         onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
+        onOpenCalendarModal={() => setCalendarModalOpen(true)}
         syncStatus={isSaving ? "saving" : saveError ? "error" : "synced"}
       />
 
@@ -420,8 +581,14 @@ export default function App() {
               setActiveInteractionId(null);
               setQuickDraftText("");
             }}
+            onSendMessage={handleSendMessage}
             onSaveEntry={handleSaveInteraction}
             onDeleteEntry={handleDeleteInteraction}
+            onUpdateTitle={handleUpdateTitle}
+            onUpdateMode={handleUpdateMode}
+            onUpdateDepth={handleUpdateDepth}
+            onOpenCalendar={() => setCalendarModalOpen(true)}
+            isGenerating={isGenerating}
             isSaving={isSaving}
             saveError={saveError}
             onRetrySave={handleRetrySave}
@@ -445,9 +612,12 @@ export default function App() {
 
         {activeTab === "activities" && (
           <ActivitiesView
+            user={currentUser}
+            todayCheckIn={todayCheckIn}
             activities={activities}
             onSaveFeedback={handleSaveActivityFeedback}
             onNavigate={setActiveTab}
+            onOpenCalendarModal={() => setCalendarModalOpen(true)}
             onQuickStartJournalWithActivity={(title) => {
               handleQuickStartJournal(`Reflecting on practice: ${title}`);
             }}
@@ -462,6 +632,7 @@ export default function App() {
             onDeleteRoutine={handleDeleteRoutine}
             onToggleRoutine={handleToggleRoutine}
             onNavigate={setActiveTab}
+            onOpenCalendarModal={() => setCalendarModalOpen(true)}
           />
         )}
 
@@ -474,6 +645,12 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* Global Google Calendar Hub Modal */}
+      <CalendarModal
+        isOpen={calendarModalOpen}
+        onClose={() => setCalendarModalOpen(false)}
+      />
     </div>
   );
 }

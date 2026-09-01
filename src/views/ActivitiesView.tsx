@@ -13,19 +13,27 @@ import {
   Sparkles,
   Search,
   Plus,
+  Calendar,
 } from "lucide-react";
 import {
   ActivityFeedbackType,
+  AuthUserState,
+  DailyCheckInState,
+  GoogleCalendarEvent,
   NavigationTab,
   WellbeingActivity,
   WellbeingDomain,
 } from "../types";
+import { AiCalendarRecommender } from "../components/AiCalendarRecommender";
 
 interface ActivitiesViewProps {
+  user: AuthUserState;
+  todayCheckIn: DailyCheckInState | null;
   activities: WellbeingActivity[];
   onSaveFeedback: (activity: WellbeingActivity) => Promise<void>;
   onNavigate: (tab: NavigationTab) => void;
   onQuickStartJournalWithActivity?: (activityTitle: string) => void;
+  onOpenCalendarModal?: () => void;
 }
 
 const DOMAINS: { id: WellbeingDomain | "all"; label: string }[] = [
@@ -53,10 +61,13 @@ const FEEDBACK_OPTIONS: { id: ActivityFeedbackType; label: string }[] = [
 ];
 
 export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
+  user,
+  todayCheckIn,
   activities,
   onSaveFeedback,
   onNavigate,
   onQuickStartJournalWithActivity,
+  onOpenCalendarModal,
 }) => {
   const [selectedDomain, setSelectedDomain] = useState<WellbeingDomain | "all">("all");
   const [selectedEnergy, setSelectedEnergy] = useState<"all" | "low" | "medium" | "high">("all");
@@ -116,43 +127,64 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
           <div className="space-y-1">
             <div className="flex items-center space-x-2 text-xs font-semibold text-[#6E9A7B] uppercase tracking-wider">
               <Compass className="w-4 h-4" />
-              <span>Wellbeing Discovery & Habits</span>
+              <span>Wellbeing Discovery & Activities</span>
             </div>
             <h1 className="text-2xl sm:text-3xl font-serif font-bold text-[#F3EFE8]">
               Wellbeing Practices & Hobbies
             </h1>
             <p className="text-xs sm:text-sm text-[#B7AFA7]">
-              Explore explainable wellbeing practices tailored for mind, body, restorative pauses, and connection.
+              Explore explainable wellbeing practices and synthesize custom AI recommendations grounded in your weekly schedule.
             </p>
           </div>
 
-          {/* Tab Switcher: Catalog vs Saved */}
-          <div className="flex items-center space-x-1.5 bg-[#171513] p-1.5 rounded-2xl border border-[#38322D] shrink-0 text-xs">
-            <button
-              id="btn-tab-activities-catalog"
-              onClick={() => setActiveTab("catalog")}
-              className={`px-3.5 py-1.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                activeTab === "catalog"
-                  ? "bg-[#C89B3C] text-[#171513] shadow-xs"
-                  : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-              }`}
-            >
-              All Suggestions
-            </button>
-            <button
-              id="btn-tab-activities-saved"
-              onClick={() => setActiveTab("saved")}
-              className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl font-semibold transition-all cursor-pointer ${
-                activeTab === "saved"
-                  ? "bg-[#6E9A7B] text-white shadow-xs"
-                  : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-              }`}
-            >
-              <Bookmark className="w-3.5 h-3.5" />
-              <span>Saved Practices</span>
-            </button>
+          {/* Action Tools: Full Calendar & Tab Switcher */}
+          <div className="flex flex-wrap items-center gap-2.5">
+            {onOpenCalendarModal && (
+              <button
+                id="btn-activities-open-calendar"
+                onClick={onOpenCalendarModal}
+                className="flex items-center space-x-1.5 px-3.5 py-2 rounded-2xl bg-[#171513] hover:bg-[#2c2723] border border-[#C89B3C]/50 text-xs font-semibold text-[#C89B3C] transition-colors cursor-pointer"
+              >
+                <Calendar className="w-3.5 h-3.5" />
+                <span>Google Calendar Hub</span>
+              </button>
+            )}
+
+            <div className="flex items-center space-x-1 bg-[#171513] p-1.5 rounded-2xl border border-[#38322D] shrink-0 text-xs">
+              <button
+                id="btn-tab-activities-catalog"
+                onClick={() => setActiveTab("catalog")}
+                className={`px-3.5 py-1.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === "catalog"
+                    ? "bg-[#C89B3C] text-[#171513] shadow-xs"
+                    : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                }`}
+              >
+                All Practices
+              </button>
+              <button
+                id="btn-tab-activities-saved"
+                onClick={() => setActiveTab("saved")}
+                className={`flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl font-semibold transition-all cursor-pointer ${
+                  activeTab === "saved"
+                    ? "bg-[#6E9A7B] text-white shadow-xs"
+                    : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                }`}
+              >
+                <Bookmark className="w-3.5 h-3.5" />
+                <span>Saved ({activities.filter((a) => a.isSaved).length})</span>
+              </button>
+            </div>
           </div>
         </div>
+
+        {/* AI Weekly Calendar Aware Recommender Box */}
+        <AiCalendarRecommender
+          user={user}
+          todayCheckIn={todayCheckIn}
+          onSaveToActivities={onSaveFeedback}
+          onOpenCalendarModal={onOpenCalendarModal}
+        />
 
         {/* Feedback Alert Notice */}
         {feedbackSuccessNotice && (

@@ -1,4 +1,4 @@
-# Production Directives
+# Production Directives & Security Policy
 
 ## 1. Agentic Threat Modeling
 * **Objective**: Force the model to perform a structured, scenario-driven threat analysis prior to outputting code or system architecture.
@@ -7,7 +7,7 @@
   * **Planning & Reasoning**: Prompt injection, system instruction bypass, tool routing hijacking.
   * **Tool Execution**: Privilege escalation via API functions, SSRF, dynamic code execution risks.
   * **Memory & State**: Firestore state persistence, session hijacking, cross-user data leaks.
-  * **Inter-System Communication**: External API calls (e.g., Google Maps, Google Sheets), token leakage.
+  * **Inter-System Communication**: External API calls (e.g., Google Maps, Google Sheets, Google Calendar), token leakage.
 * **Mandatory Execution Criteria**: Whenever the user asks to design or implement a feature, the model must first generate a Threat Summary Table mapping risks to countermeasures.
 
 ## 2. Secure Coding Standard
@@ -70,7 +70,7 @@
   2. **Error Recovery Matrix**:
     Catch recoverable HTTP/API status codes (`503 UNAVAILABLE`, `429 RESOURCE_EXHAUSTED`, `404 NOT_FOUND`, `500 INTERNAL`) and sequentially attempt the next model in the fallback chain before bubbling an error up to the UI.
   3. **Standard Helper Implementation**:
-    Always scaffold a reusable helper utility (e.g., `generateContentWithFallback`) in backend routes to ensure uniform resilience across all endpoints.
+    Always scaffold a reusable helper utility (e.g., `generateContentWithFallback` or `generateContentForTier`) in backend routes to ensure uniform resilience across all endpoints.
 * **Server-Side Robustness & Payload Ingestion Standards**: Across all backend frameworks and runtimes:
   1. **Top-Level Request Deserialization (Ordering Guarantee)**:
     Always mount and configure body parsers and JSON payload middleware before defining any endpoint routes. Handlers must never be registered upstream of payload decoding middleware.
@@ -95,7 +95,7 @@
   * **Secret Management Setup**: Step-by-step guidance on creating Secret Manager secrets (e.g., `GEMINI_API_KEY`) and granting the Cloud Run runtime service account the necessary Secret Manager Secret Accessor IAM permissions.
   * **Database Security Configuration**: Instructions for provisioning Cloud Firestore and deploying secure, owner-bound security rules (`firestore.rules`).
   * **Cloud Run Deployment Flow**: Pre-formatted, container-friendly deploy instructions utilizing the `gcloud run deploy` command.
-  * **Required Campaign Labeling**: Detailed instructions on applying the mandatory resource label to register the service for automated challenge verification:
+  * **Required Campaign Labeling**: Detailed instructions on applying the mandatory resource label to register the service for automated challenge verification.
 * **Mandatory Execution Criteria**: When invoked, the model must output a fully populated, copy-pasteable README structure. It is highly recommended that the generated README includes:
   1. **Firestore Security Rules**: The exact rules block supporting user data isolation:
      ```javascript
@@ -125,8 +125,6 @@
        --update-labels=dev-tutorial=cloud-run-ai-challenge \
        --region=<REGION>
      ```
-
-
 
 # Good Health & Wellbeing Product Directives
 
@@ -313,17 +311,17 @@
 
 ## 18. Google Calendar Integration
 * Google Calendar is the application action/planning layer.
-* Supported capabilities may include:
-  * OAuth connection.
-  * Reading authorized upcoming schedule.
-  * Checking availability.
+* Supported capabilities include:
+  * OAuth connection (`https://www.googleapis.com/auth/calendar.events` and `https://www.googleapis.com/auth/calendar.readonly`).
+  * Reading authorized upcoming weekly schedule (7-day window).
+  * Checking availability and event density.
   * Suggesting realistic times.
   * Creating events.
   * Modifying events.
   * Deleting events.
   * Creating recurring events.
   * Setting reminders.
-  * Linking events to journal entries or routines.
+  * Linking events to journal entries, activities, or routines.
 * **Least Privilege**: Request only OAuth scopes required by implemented functionality.
 * **Calendar Preview**: Before a consequential write, show:
   * Activity.
@@ -566,6 +564,7 @@
 * **Journal**:
   * Write/speak entry.
   * Quick / Reflect / Deep.
+  * Multi-turn AI reflection and dialogue.
   * Journal history.
 * **Insights**:
   * Daily reflection.

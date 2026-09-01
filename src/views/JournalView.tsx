@@ -19,16 +19,41 @@ import {
   Filter,
   X,
   Compass,
+  Send,
+  Loader2,
+  Calendar,
+  CalendarPlus,
+  Copy,
+  MessageSquare,
+  Sparkle,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
+  Flame,
+  ExternalLink,
+  CalendarCheck,
 } from "lucide-react";
 import {
   AuthUserState,
   JournalInteraction,
+  JournalMessage,
   JournalMode,
   MoodType,
   ReflectionDepth,
+  SuggestedActivityItem,
   WellbeingDomain,
 } from "../types";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
+import { ScheduleActivityModal } from "../components/ScheduleActivityModal";
+import {
+  parseActivityScheduleDateTime,
+  formatHumanReadable,
+} from "../utils/dateParser";
+import {
+  getStoredToken,
+  requestGoogleCalendarAuth,
+  createGoogleCalendarEvent,
+} from "../googleCalendar";
 
 interface JournalViewProps {
   user: AuthUserState;
@@ -36,8 +61,22 @@ interface JournalViewProps {
   activeInteractionId: string | null;
   onSelectInteraction: (id: string) => void;
   onNewEntry: () => void;
+  onSendMessage?: (
+    prompt: string,
+    mode: JournalMode,
+    depth: ReflectionDepth,
+    title: string,
+    domains: WellbeingDomain[],
+    mood: MoodType | string,
+    tags: string[]
+  ) => Promise<void>;
   onSaveEntry: (entry: JournalInteraction) => Promise<void>;
   onDeleteEntry: (id: string) => Promise<void>;
+  onUpdateTitle?: (title: string) => void;
+  onUpdateMode?: (mode: JournalMode) => void;
+  onUpdateDepth?: (depth: ReflectionDepth) => void;
+  onOpenCalendar?: () => void;
+  isGenerating?: boolean;
   isSaving: boolean;
   saveError: string | null;
   onRetrySave: () => void;
@@ -63,14 +102,43 @@ const MOOD_OPTIONS: { id: MoodType; label: string; icon: string }[] = [
   { id: "drained", label: "Drained", icon: "🌙" },
 ];
 
+const PROMPT_STARTERS = [
+  {
+    title: "Morning Clarity & Daily Intent",
+    text: "Here is what is top of mind for me today, along with my main priority and how I feel:",
+    tag: "Mind",
+  },
+  {
+    title: "Activity & Routine Recommendations",
+    text: "Based on my current energy and stress levels, can you recommend 2-3 restorative activities or routines I can do today or this week?",
+    tag: "Body",
+  },
+  {
+    title: "Brainstorming Ideas & Fresh Perspectives",
+    text: "I am feeling a bit stuck on my current schedule and work rhythm. Can you help me brainstorm creative ways to structure my afternoon?",
+    tag: "Life",
+  },
+  {
+    title: "Decompression & Gratitude Reflection",
+    text: "Reflecting on the challenges and bright moments from earlier today, I want to unpack what gave me energy vs drained me:",
+    tag: "Connection",
+  },
+];
+
 export const JournalView: React.FC<JournalViewProps> = ({
   user,
   interactions,
   activeInteractionId,
   onSelectInteraction,
   onNewEntry,
+  onSendMessage,
   onSaveEntry,
   onDeleteEntry,
+  onUpdateTitle,
+  onUpdateMode,
+  onUpdateDepth,
+  onOpenCalendar,
+  isGenerating = false,
   isSaving,
   saveError,
   onRetrySave,
@@ -87,587 +155,1033 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
   // Local Form Editor State
   const [title, setTitle] = useState("");
-  const [rawText, setRawText] = useState("");
+  const [inputText, setInputText] = useState("");
   const [mode, setMode] = useState<JournalMode>("reflection");
   const [depth, setDepth] = useState<ReflectionDepth>("reflect");
   const [selectedDomains, setSelectedDomains] = useState<WellbeingDomain[]>(["mind"]);
   const [entryMood, setEntryMood] = useState<MoodType | string>("reflective");
-  const [energyLevel, setEnergyLevel] = useState<number>(3);
-  const [stressLevel, setStressLevel] = useState<number>(2);
   const [tagsInput, setTagsInput] = useState<string>("");
-  const [justSavedNotice, setJustSavedNotice] = useState(false);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
+  const [showDetailsPanel, setShowDetailsPanel] = useState<boolean>(false);
+  const [mobileHistoryOpen, setMobileHistoryOpen] = useState<boolean>(false);
+
+  // Scheduling states for direct Google Calendar button inside activity recommendation cards
+  const [schedulingActivityId, setSchedulingActivityId] = useState<string | null>(null);
+  const [scheduledActivityIds, setScheduledActivityIds] = useState<Record<string, string>>({});
+  const [calendarToast, setCalendarToast] = useState<{
+    show: boolean;
+    title: string;
+    message: string;
+    isError?: boolean;
+  }>({
+    show: false,
+    title: "",
+    message: "",
+  });
+
+  // Modal state for smart date confirmation & customization
+  const [modalActivityState, setModalActivityState] = useState<{
+    isOpen: boolean;
+    activity: SuggestedActivityItem | null;
+    actKey: string | null;
+  }>({
+    isOpen: false,
+    activity: null,
+    actKey: null,
+  });
 
   // Search & Filter State in Sidebar
   const [searchQuery, setSearchQuery] = useState("");
-  const [domainFilter, setDomainFilter] = useState<"all" | WellbeingDomain>("all");
-  const [depthFilter, setDepthFilter] = useState<"all" | ReflectionDepth>("all");
-  const [historySidebarOpen, setHistorySidebarOpen] = useState(true);
+  const [filterDomain, setFilterDomain] = useState<WellbeingDomain | "all">("all");
 
-  // Delete modal state
-  const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+  // Deletion modal state
+  const [deleteModalState, setDeleteModalState] = useState<{
+    isOpen: boolean;
+    entryId: string | null;
+    entryTitle: string;
+  }>({
+    isOpen: false,
+    entryId: null,
+    entryTitle: "",
+  });
 
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // Populate editor state when active entry changes or initial text is provided
+  // Auto-scroll to bottom of conversation
+  useEffect(() => {
+    if (activeEntry?.messages && activeEntry.messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [activeEntry?.messages?.length, isGenerating]);
+
+  // Sync state when active entry changes
   useEffect(() => {
     if (activeEntry) {
       setTitle(activeEntry.title || "");
-      const messageContent =
-        activeEntry.rawText ||
-        (activeEntry.messages && activeEntry.messages.length > 0
-          ? activeEntry.messages.map((m) => m.text).join("\n\n")
-          : "");
-      setRawText(messageContent);
       setMode(activeEntry.mode || "reflection");
       setDepth(activeEntry.depth || "reflect");
       setSelectedDomains(activeEntry.domains || ["mind"]);
       setEntryMood(activeEntry.mood || "reflective");
-      setEnergyLevel(activeEntry.energy || 3);
-      setStressLevel(activeEntry.stress || 2);
-      setTagsInput(activeEntry.tags ? activeEntry.tags.join(", ") : "");
+      setTagsInput(activeEntry.tags?.join(", ") || "");
+      setInputText("");
     } else {
-      // New Draft
       setTitle("");
-      setRawText(initialDraftText || "");
+      setInputText(initialDraftText || "");
       setMode("reflection");
       setDepth("reflect");
       setSelectedDomains(["mind"]);
       setEntryMood(initialMood || "reflective");
-      setEnergyLevel(3);
-      setStressLevel(2);
       setTagsInput("");
     }
   }, [activeEntry, initialDraftText, initialMood]);
 
-  // Toggle domain
-  const toggleDomain = (domain: WellbeingDomain) => {
-    if (selectedDomains.includes(domain)) {
-      if (selectedDomains.length > 1) {
-        setSelectedDomains(selectedDomains.filter((d) => d !== domain));
+  // Filtered interaction history
+  const filteredInteractions = useMemo(() => {
+    return interactions.filter((item) => {
+      const matchesSearch =
+        !searchQuery ||
+        item.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.rawText?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.summary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.messages?.some((m) => m.text.toLowerCase().includes(searchQuery.toLowerCase()));
+
+      const matchesDomain =
+        filterDomain === "all" || item.domains?.includes(filterDomain);
+
+      return matchesSearch && matchesDomain;
+    });
+  }, [interactions, searchQuery, filterDomain]);
+
+  // Open Smart Schedule Modal for Date/Time Confirmation & Customization
+  const handleOpenScheduleModal = (act: SuggestedActivityItem, actKey: string) => {
+    setModalActivityState({
+      isOpen: true,
+      activity: act,
+      actKey,
+    });
+  };
+
+  // Execute Google Calendar Event Creation with confirmed Start/End dates
+  const handleConfirmScheduleFromModal = async (params: {
+    title: string;
+    description: string;
+    domain: WellbeingDomain;
+    startDate: Date;
+    endDate: Date;
+    durationMinutes: number;
+    reason?: string;
+  }) => {
+    const actKey = modalActivityState.actKey;
+    if (!actKey) return;
+
+    setSchedulingActivityId(actKey);
+    try {
+      let token = getStoredToken();
+      if (!token) {
+        // Request auth with Google OAuth
+        const authRes = await requestGoogleCalendarAuth();
+        token = authRes.accessToken;
       }
-    } else {
-      setSelectedDomains([...selectedDomains, domain]);
+
+      if (!token) {
+        throw new Error("Google Calendar authorization was not granted.");
+      }
+
+      const colorId =
+        params.domain === "body"
+          ? "10"
+          : params.domain === "mind"
+          ? "5"
+          : params.domain === "connection"
+          ? "4"
+          : "2";
+
+      const createdEvent = await createGoogleCalendarEvent(token, {
+        title: `🌱 ${params.title}`,
+        description: `${params.description}\n\n• Why this fits: ${
+          params.reason || "Mindful recommendation from your journal"
+        }\n• Recommended Duration: ${params.durationMinutes} mins\n• Wellbeing Domain: ${params.domain.toUpperCase()}`,
+        startTime: params.startDate.toISOString(),
+        endTime: params.endDate.toISOString(),
+        colorId,
+      });
+
+      setScheduledActivityIds((prev) => ({
+        ...prev,
+        [actKey]: createdEvent.id,
+      }));
+
+      setModalActivityState({
+        isOpen: false,
+        activity: null,
+        actKey: null,
+      });
+
+      const dateHuman = formatHumanReadable(params.startDate);
+      setCalendarToast({
+        show: true,
+        title: "Added to Google Calendar! 🗓️",
+        message: `"${params.title}" scheduled for ${dateHuman}.`,
+        isError: false,
+      });
+      setTimeout(() => setCalendarToast({ show: false, title: "", message: "" }), 5000);
+    } catch (err: any) {
+      console.error("Failed to add activity to calendar:", err);
+      setCalendarToast({
+        show: true,
+        title: "Calendar Scheduling Notice",
+        message: err?.message || "Could not connect to Google Calendar. Please check permissions.",
+        isError: true,
+      });
+      setTimeout(() => setCalendarToast({ show: false, title: "", message: "" }), 5000);
+      throw err;
+    } finally {
+      setSchedulingActivityId(null);
     }
   };
 
-  // Filtered interactions list
-  const filteredInteractions = useMemo(() => {
-    return interactions.filter((item) => {
-      if (domainFilter !== "all") {
-        if (!item.domains || !item.domains.includes(domainFilter)) return false;
-      }
-      if (depthFilter !== "all") {
-        if (item.depth !== depthFilter) return false;
-      }
-      if (!searchQuery.trim()) return true;
-      const q = searchQuery.toLowerCase();
-      const titleMatch = (item.title || "").toLowerCase().includes(q);
-      const textMatch = (item.rawText || "").toLowerCase().includes(q);
-      const msgMatch = (item.messages || []).some((m) =>
-        m.text.toLowerCase().includes(q)
-      );
-      const tagMatch = (item.tags || []).some((t) => t.toLowerCase().includes(q));
-      return titleMatch || textMatch || msgMatch || tagMatch;
-    });
-  }, [interactions, domainFilter, depthFilter, searchQuery]);
+  // Handle Conversational Send to Gemini
+  const handleReflectWithGemini = async () => {
+    const textToSend = inputText.trim();
+    if (!textToSend || isGenerating) return;
 
-  // Save handler
-  const handleSave = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const content = rawText.trim();
-    if (!content || isSaving) return;
-
-    let finalTitle = title.trim();
-    if (!finalTitle) {
-      finalTitle = content.slice(0, 45) + (content.length > 45 ? "..." : "");
-    }
-
-    const tagsArray = tagsInput
+    const parsedTags = tagsInput
       .split(",")
       .map((t) => t.trim().toLowerCase())
-      .filter(Boolean);
+      .filter((t) => t.length > 0);
+
+    const activeTitle = title.trim() || (activeEntry ? activeEntry.title : textToSend.slice(0, 40));
+
+    if (onSendMessage) {
+      setInputText("");
+      await onSendMessage(
+        textToSend,
+        mode,
+        depth,
+        activeTitle,
+        selectedDomains,
+        entryMood,
+        parsedTags
+      );
+    }
+  };
+
+  // Handle Save Note Directly (without calling AI)
+  const handleSaveDirectly = async () => {
+    if (!user?.uid) return;
+    const textToSave = inputText.trim();
+    if (!textToSave && !title.trim() && (!activeEntry || activeEntry.messages.length === 0)) {
+      return;
+    }
 
     const now = Date.now();
-    const interactionId = activeEntry?.id || `entry_${now}_${Math.random().toString(36).slice(2, 7)}`;
+    const parsedTags = tagsInput
+      .split(",")
+      .map((t) => t.trim().toLowerCase())
+      .filter((t) => t.length > 0);
 
-    const userMessage = {
-      id: `msg_${now}`,
-      role: "user" as const,
-      text: content,
-      timestamp: now,
-    };
+    const finalTitle = title.trim() || (activeEntry?.title ? activeEntry.title : textToSave.slice(0, 40)) || "Personal Note";
+
+    const userMessageList: JournalMessage[] = activeEntry?.messages ? [...activeEntry.messages] : [];
+    if (textToSave) {
+      userMessageList.push({
+        id: `msg_u_${now}`,
+        role: "user",
+        text: textToSave,
+        timestamp: now,
+      });
+    }
 
     const entryToSave: JournalInteraction = {
-      id: interactionId,
+      id: activeEntry?.id || `entry_${now}_${Math.random().toString(36).slice(2, 7)}`,
       userId: user.uid,
       title: finalTitle,
-      rawText: content,
+      rawText: activeEntry?.rawText
+        ? (textToSave ? `${activeEntry.rawText}\n\n${textToSave}` : activeEntry.rawText)
+        : textToSave,
       mode,
       depth,
       domains: selectedDomains,
       mood: entryMood,
-      energy: energyLevel,
-      stress: stressLevel,
-      tags: tagsArray,
-      messages: [userMessage],
+      tags: parsedTags,
+      messages: userMessageList,
       summary: activeEntry?.summary,
       themes: activeEntry?.themes,
       analysis: activeEntry?.analysis,
+      modelUsed: activeEntry?.modelUsed,
       createdAt: activeEntry?.createdAt || now,
       updatedAt: now,
     };
 
-    try {
-      await onSaveEntry(entryToSave);
-      setJustSavedNotice(true);
-      setTimeout(() => setJustSavedNotice(false), 3000);
-    } catch {
-      // Content is preserved in local buffer
+    setInputText("");
+    await onSaveEntry(entryToSave);
+  };
+
+  // Keyboard shortcut: Cmd/Ctrl + Enter to send to Gemini
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      handleReflectWithGemini();
     }
   };
 
-  const handleStartNew = () => {
-    onNewEntry();
-    setTitle("");
-    setRawText("");
-    setTagsInput("");
+  const handleCopyMessage = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedMsgId(id);
+    setTimeout(() => setCopiedMsgId(null), 2000);
   };
 
-  const targetDeleteEntry = useMemo(() => {
-    if (!deleteTargetId) return null;
-    return interactions.find((it) => it.id === deleteTargetId) || null;
-  }, [deleteTargetId, interactions]);
+  const toggleDomain = (d: WellbeingDomain) => {
+    setSelectedDomains((prev) =>
+      prev.includes(d) ? prev.filter((item) => item !== d) : [...prev, d]
+    );
+  };
 
   return (
-    <div className="flex-1 flex overflow-hidden bg-[#171513] text-[#F3EFE8]">
-      {/* 1. History Sidebar */}
-      <div
-        className={`${
-          historySidebarOpen ? "w-80 lg:w-88" : "w-0 hidden md:flex md:w-12"
-        } transition-all duration-200 border-r border-[#38322D] bg-[#211E1B] flex flex-col shrink-0 overflow-hidden select-none`}
-      >
-        {historySidebarOpen ? (
-          <div className="flex flex-col h-full">
-            {/* Sidebar Top Header */}
-            <div className="p-4 border-b border-[#38322D] space-y-3 shrink-0">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <BookOpen className="w-4 h-4 text-[#C89B3C]" />
-                  <h2 className="font-serif font-bold text-sm text-[#F3EFE8]">
-                    Journal Entries
-                  </h2>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-[#171513] text-[#B7AFA7] border border-[#38322D]">
-                    {interactions.length}
-                  </span>
-                </div>
-
-                <button
-                  id="btn-sidebar-new-entry"
-                  onClick={handleStartNew}
-                  className="flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] font-semibold text-xs transition-colors cursor-pointer shadow-xs"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>New</span>
-                </button>
-              </div>
-
-              {/* Search Bar */}
-              <div className="relative">
-                <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#B7AFA7]" />
-                <input
-                  id="input-search-journal"
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search thoughts, tags..."
-                  className="w-full pl-8 pr-7 py-1.5 bg-[#171513] border border-[#38322D] rounded-xl text-xs text-[#F3EFE8] placeholder-[#B7AFA7]/60 focus:outline-none focus:border-[#C89B3C]/60"
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#B7AFA7] hover:text-[#F3EFE8] text-xs cursor-pointer"
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-
-              {/* Domain Filter Pills */}
-              <div className="flex items-center space-x-1 overflow-x-auto no-scrollbar text-[11px] pb-1">
-                <button
-                  onClick={() => setDomainFilter("all")}
-                  className={`px-2 py-0.5 rounded-lg whitespace-nowrap transition-colors cursor-pointer ${
-                    domainFilter === "all"
-                      ? "bg-[#C89B3C]/20 border border-[#C89B3C]/50 text-[#C89B3C] font-semibold"
-                      : "text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513]"
-                  }`}
-                >
-                  All
-                </button>
-                {DOMAINS.map((d) => (
-                  <button
-                    key={d.id}
-                    onClick={() => setDomainFilter(d.id)}
-                    className={`px-2 py-0.5 rounded-lg whitespace-nowrap capitalize transition-colors cursor-pointer ${
-                      domainFilter === d.id
-                        ? "bg-[#36302b] text-[#F3EFE8] border border-[#38322D] font-semibold"
-                        : "text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513]"
-                    }`}
-                  >
-                    {d.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Entries List */}
-            <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-              {filteredInteractions.length === 0 ? (
-                <div className="text-center py-12 px-4">
-                  <BookOpen className="w-8 h-8 mx-auto text-[#B7AFA7]/40 mb-2" />
-                  <p className="text-xs font-medium text-[#B7AFA7]">
-                    {searchQuery || domainFilter !== "all"
-                      ? "No matching entries found"
-                      : "No reflections recorded yet"}
-                  </p>
-                  <button
-                    onClick={handleStartNew}
-                    className="text-xs text-[#C89B3C] hover:underline mt-2 inline-block font-semibold cursor-pointer"
-                  >
-                    + Write your first reflection
-                  </button>
-                </div>
-              ) : (
-                filteredInteractions.map((item) => {
-                  const isActive = activeInteractionId === item.id;
-                  const preview =
-                    item.rawText ||
-                    (item.messages && item.messages.length > 0
-                      ? item.messages[0].text
-                      : "Reflection note");
-
-                  return (
-                    <div
-                      key={item.id}
-                      id={`journal-list-item-${item.id}`}
-                      onClick={() => onSelectInteraction(item.id)}
-                      className={`group relative p-3 rounded-2xl border transition-all cursor-pointer ${
-                        isActive
-                          ? "bg-[#2c2723] border-[#C89B3C]/50 shadow-xs"
-                          : "bg-[#171513]/60 border-[#38322D] hover:bg-[#2c2723] hover:border-[#38322D]"
-                      }`}
-                    >
-                      <div className="flex items-start justify-between space-x-2 mb-1">
-                        <h4
-                          className={`text-xs font-semibold truncate flex-1 ${
-                            isActive ? "text-[#C89B3C]" : "text-[#F3EFE8] group-hover:text-white"
-                          }`}
-                        >
-                          {item.title || "Untitled Reflection"}
-                        </h4>
-                        <span className="text-[10px] text-[#B7AFA7] shrink-0 font-mono">
-                          {new Date(item.updatedAt || item.createdAt).toLocaleDateString([], {
-                            month: "short",
-                            day: "numeric",
-                          })}
-                        </span>
-                      </div>
-
-                      <p className="text-[11px] text-[#B7AFA7] line-clamp-2 leading-relaxed mb-2">
-                        {preview}
-                      </p>
-
-                      <div className="flex items-center justify-between text-[10px] text-[#B7AFA7]">
-                        <div className="flex items-center space-x-1">
-                          {item.domains && item.domains.length > 0 ? (
-                            item.domains.map((dom) => (
-                              <span
-                                key={dom}
-                                className="px-1.5 py-0.2 rounded bg-[#171513] text-[#C89B3C] border border-[#38322D] capitalize"
-                              >
-                                {dom}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="capitalize text-[#C89B3C]">mind</span>
-                          )}
-                          <span className="capitalize text-[#738F85] ml-1">
-                            {item.depth || "reflect"}
-                          </span>
-                        </div>
-
-                        <button
-                          id={`btn-delete-entry-${item.id}`}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setDeleteTargetId(item.id);
-                          }}
-                          className="opacity-0 group-hover:opacity-100 p-1 text-[#B7AFA7] hover:text-[#B86B6B] hover:bg-[#B86B6B]/15 rounded transition-all cursor-pointer"
-                          title="Delete entry"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
+    <div id="journal-view-container" className="flex-1 flex overflow-hidden bg-[#171513] text-[#F3EFE8] relative">
+      {/* Toast notification for Calendar Actions */}
+      {calendarToast.show && (
+        <div
+          className={`fixed top-4 right-4 z-50 p-4 rounded-2xl border shadow-xl flex items-start gap-3 max-w-sm animate-fade-in ${
+            calendarToast.isError
+              ? "bg-[#3B1E1E] border-[#5E2B2B] text-[#F8B4B4]"
+              : "bg-[#211E1B] border-[#C89B3C] text-[#F3EFE8]"
+          }`}
+        >
+          {calendarToast.isError ? (
+            <AlertTriangle className="w-5 h-5 text-[#E57373] shrink-0 mt-0.5" />
+          ) : (
+            <CalendarCheck className="w-5 h-5 text-[#C89B3C] shrink-0 mt-0.5" />
+          )}
+          <div className="space-y-0.5">
+            <h4 className="text-xs font-bold">{calendarToast.title}</h4>
+            <p className="text-[11px] text-[#B7AFA7] leading-relaxed">{calendarToast.message}</p>
           </div>
-        ) : (
-          <div className="p-2 flex flex-col items-center justify-start h-full pt-4 space-y-4">
-            <button
-              onClick={() => setHistorySidebarOpen(true)}
-              className="p-2 rounded-xl text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] cursor-pointer"
-              title="Expand History Sidebar"
-            >
-              <BookOpen className="w-5 h-5 text-[#C89B3C]" />
-            </button>
-          </div>
-        )}
+        </div>
+      )}
+
+      {/* Mobile History Toggle Button */}
+      <div className="lg:hidden absolute top-3 left-3 z-30">
+        <button
+          id="mobile-history-drawer-btn"
+          onClick={() => setMobileHistoryOpen(!mobileHistoryOpen)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#211E1B]/95 backdrop-blur border border-[#38322D] text-xs font-medium text-[#F3EFE8] shadow-md active:scale-95 cursor-pointer"
+        >
+          <BookOpen className="w-3.5 h-3.5 text-[#C89B3C]" />
+          <span>Journal History ({interactions.length})</span>
+        </button>
       </div>
 
-      {/* 2. Journal Studio / Editor */}
-      <div className="flex-1 flex flex-col h-full overflow-hidden">
-        {/* Persistence Error Banner */}
+      {/* LEFT: Journal Entries Sidebar (Warm Dark Themed) */}
+      <aside
+        id="journal-sidebar"
+        className={`
+          fixed lg:static inset-y-0 left-0 z-40 w-80 sm:w-88 lg:w-80 bg-[#1E1B18] border-r border-[#38322D] flex flex-col transition-transform duration-200 ease-out
+          ${mobileHistoryOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full lg:translate-x-0"}
+        `}
+      >
+        {/* Sidebar Header */}
+        <div className="p-4 border-b border-[#38322D] flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C]">
+              <BookOpen className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="text-sm font-bold text-[#F3EFE8] font-serif tracking-tight">Reflections</h2>
+              <p className="text-[11px] text-[#B7AFA7]">{interactions.length} entries recorded</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              id="new-reflection-btn"
+              onClick={() => {
+                onNewEntry();
+                setMobileHistoryOpen(false);
+              }}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl bg-[#C89B3C] text-[#171513] text-xs font-semibold hover:bg-[#b98c2d] transition-colors shadow-sm cursor-pointer"
+              title="New Reflection"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New</span>
+            </button>
+            <button
+              onClick={() => setMobileHistoryOpen(false)}
+              className="lg:hidden p-1.5 text-[#B7AFA7] hover:text-[#F3EFE8] rounded-lg"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Search & Filter */}
+        <div className="p-3 border-b border-[#38322D] space-y-2">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#7A746E]" />
+            <input
+              id="journal-search-input"
+              type="text"
+              placeholder="Search reflections, summaries..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#171513] border border-[#38322D] text-xs text-[#F3EFE8] placeholder-[#7A746E] focus:border-[#C89B3C] focus:outline-none transition-all"
+            />
+          </div>
+
+          {/* Domain Filter Pills */}
+          <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+            <button
+              onClick={() => setFilterDomain("all")}
+              className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                filterDomain === "all"
+                  ? "bg-[#C89B3C] text-[#171513] font-semibold shadow-xs"
+                  : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border border-[#38322D]"
+              }`}
+            >
+              All
+            </button>
+            {DOMAINS.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => setFilterDomain(d.id)}
+                className={`px-2.5 py-1 rounded-lg text-[11px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  filterDomain === d.id
+                    ? "bg-[#6E9A7B] text-white font-semibold shadow-xs"
+                    : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border border-[#38322D]"
+                }`}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Entries List */}
+        <div id="journal-history-list" className="flex-1 overflow-y-auto p-2 space-y-1.5">
+          {filteredInteractions.length === 0 ? (
+            <div className="text-center py-10 px-4">
+              <Compass className="w-8 h-8 mx-auto text-[#484038] stroke-[1.5] mb-2" />
+              <p className="text-xs font-semibold text-[#B7AFA7]">No entries found</p>
+              <p className="text-[11px] text-[#7A746E] mt-1">
+                {searchQuery ? "Try another keyword" : "Start your first reflection"}
+              </p>
+            </div>
+          ) : (
+            filteredInteractions.map((entry) => {
+              const isActive = entry.id === activeInteractionId;
+              const dateStr = new Date(entry.updatedAt || entry.createdAt).toLocaleDateString(
+                undefined,
+                { month: "short", day: "numeric" }
+              );
+              const preview =
+                entry.summary ||
+                entry.messages?.find((m) => m.role === "model")?.text ||
+                entry.rawText ||
+                "Mindful session";
+
+              return (
+                <div
+                  key={entry.id}
+                  id={`journal-item-${entry.id}`}
+                  onClick={() => {
+                    onSelectInteraction(entry.id);
+                    setMobileHistoryOpen(false);
+                  }}
+                  className={`group relative p-3 rounded-2xl cursor-pointer border transition-all ${
+                    isActive
+                      ? "bg-[#C89B3C]/15 border-[#C89B3C] shadow-sm"
+                      : "bg-[#211E1B] border-[#38322D] hover:border-[#4E463E] hover:bg-[#26221E]"
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <h3 className={`text-xs font-semibold line-clamp-1 ${
+                      isActive ? "text-[#F3EFE8] font-bold" : "text-[#E6E1D8]"
+                    }`}>
+                      {entry.title || "Untitled Reflection"}
+                    </h3>
+                    <span className="text-[10px] text-[#7A746E] shrink-0">{dateStr}</span>
+                  </div>
+
+                  <p className="text-[11px] text-[#B7AFA7] line-clamp-2 mt-1 leading-relaxed">
+                    {preview}
+                  </p>
+
+                  <div className="flex items-center justify-between mt-2.5 pt-1.5 border-t border-[#38322D]/60">
+                    <div className="flex items-center gap-1.5">
+                      {entry.domains?.slice(0, 2).map((d) => (
+                        <span
+                          key={d}
+                          className="px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-[#171513] border border-[#38322D] text-[#C89B3C]"
+                        >
+                          {d}
+                        </span>
+                      ))}
+                      {entry.mode && (
+                        <span className="text-[9px] text-[#7A746E] font-mono capitalize">
+                          {entry.mode}
+                        </span>
+                      )}
+                    </div>
+
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setDeleteModalState({
+                          isOpen: true,
+                          entryId: entry.id,
+                          entryTitle: entry.title || "Untitled Reflection",
+                        });
+                      }}
+                      className="opacity-0 group-hover:opacity-100 p-1 text-[#7A746E] hover:text-[#E57373] transition-opacity rounded"
+                      title="Delete Entry"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </aside>
+
+      {/* Backdrop for Mobile Sidebar */}
+      {mobileHistoryOpen && (
+        <div
+          onClick={() => setMobileHistoryOpen(false)}
+          className="fixed inset-0 bg-black/50 backdrop-blur-xs z-30 lg:hidden"
+        />
+      )}
+
+      {/* RIGHT: Active Conversational Journal Studio (Warm Dark Themed) */}
+      <main className="flex-1 flex flex-col h-full overflow-hidden bg-[#171513]">
+        {/* Top Studio Bar */}
+        <header className="px-4 lg:px-6 py-3.5 bg-[#211E1B] border-b border-[#38322D] flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="flex items-center gap-3 flex-1 min-w-[200px]">
+            <input
+              id="reflection-title-input"
+              type="text"
+              placeholder="Session Title (e.g., Afternoon Focus & Reset)"
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                if (onUpdateTitle && activeEntry) {
+                  onUpdateTitle(e.target.value);
+                }
+              }}
+              className="text-base lg:text-lg font-serif font-bold text-[#F3EFE8] placeholder-[#7A746E] bg-transparent focus:outline-none w-full border-b border-transparent focus:border-[#C89B3C] transition-colors pb-0.5"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Mode Selector (Reflection, Summary, Brainstorm, Chat) */}
+            <div className="hidden sm:flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs">
+              {(["reflection", "summary", "brainstorm", "chat"] as JournalMode[]).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => {
+                    setMode(m);
+                    if (onUpdateMode && activeEntry) onUpdateMode(m);
+                  }}
+                  className={`px-3 py-1 rounded-lg capitalize font-semibold transition-all cursor-pointer ${
+                    mode === m
+                      ? "bg-[#292420] text-[#C89B3C] border border-[#38322D] shadow-xs"
+                      : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+
+            {/* Depth Selector (Quick, Reflect, Deep) */}
+            <div className="flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs">
+              {(["quick", "reflect", "deep"] as ReflectionDepth[]).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => {
+                    setDepth(d);
+                    if (onUpdateDepth && activeEntry) onUpdateDepth(d);
+                  }}
+                  className={`px-2.5 py-1 rounded-lg capitalize font-semibold transition-all cursor-pointer ${
+                    depth === d
+                      ? "bg-[#C89B3C] text-[#171513] shadow-xs"
+                      : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                  }`}
+                >
+                  {d}
+                </button>
+              ))}
+            </div>
+
+            {/* Calendar Shortcut */}
+            {onOpenCalendar && (
+              <button
+                id="journal-calendar-shortcut-btn"
+                onClick={onOpenCalendar}
+                className="p-2 rounded-xl bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] hover:border-[#C89B3C] transition-colors border border-[#38322D] cursor-pointer"
+                title="Open Schedule & Calendar"
+              >
+                <Calendar className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Toggle Metadata Panel */}
+            <button
+              onClick={() => setShowDetailsPanel(!showDetailsPanel)}
+              className={`p-2 rounded-xl transition-colors border cursor-pointer ${
+                showDetailsPanel
+                  ? "bg-[#C89B3C]/20 text-[#C89B3C] border-[#C89B3C]"
+                  : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border-[#38322D]"
+              }`}
+              title="Toggle Mood & Tags Context"
+            >
+              <Sliders className="w-4 h-4" />
+            </button>
+          </div>
+        </header>
+
+        {/* Save Error Notice */}
         {saveError && (
-          <div className="bg-[#B86B6B]/20 border-b border-[#B86B6B]/50 px-4 py-2.5 text-xs text-[#F3EFE8] flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <AlertTriangle className="w-4 h-4 text-[#B86B6B] shrink-0" />
-              <span>
-                Persistence Note: {saveError} (Draft saved in offline mirror)
-              </span>
+          <div className="mx-4 mt-3 p-3 rounded-2xl bg-[#3B1E1E] border border-[#5E2B2B] text-[#F8B4B4] text-xs flex items-center justify-between gap-3 animate-fade-in shrink-0">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-[#E57373] shrink-0" />
+              <p className="font-medium">{saveError}</p>
             </div>
             <button
               onClick={onRetrySave}
-              className="flex items-center space-x-1 px-3 py-1 bg-[#B86B6B] hover:bg-[#a65d5d] text-white rounded-lg text-xs font-semibold cursor-pointer"
+              className="flex items-center gap-1 px-3 py-1 bg-[#211E1B] border border-[#5E2B2B] rounded-xl text-xs font-bold text-[#F8B4B4] hover:bg-[#3B1E1E] transition-colors shrink-0 cursor-pointer"
             >
-              <RotateCcw className="w-3 h-3" />
-              <span>Retry Save</span>
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Retry</span>
             </button>
           </div>
         )}
 
-        {/* Editor Top Bar: Title, Modes, Domain Selectors */}
-        <div className="p-4 sm:px-6 border-b border-[#38322D] bg-[#211E1B] space-y-3 shrink-0">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            {/* Title Input */}
-            <div className="flex-1 min-w-0">
-              <input
-                id="input-journal-title"
-                type="text"
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="Untitled Reflection..."
-                className="w-full bg-transparent font-serif text-lg sm:text-xl font-bold text-[#F3EFE8] placeholder-[#B7AFA7]/50 focus:outline-none border-b border-transparent focus:border-[#C89B3C]/60 transition-colors"
-              />
-              <div className="flex items-center space-x-3 text-[11px] text-[#B7AFA7] mt-1">
-                <span className="flex items-center space-x-1">
-                  <Clock className="w-3 h-3" />
-                  <span>
-                    {activeEntry?.updatedAt
-                      ? new Date(activeEntry.updatedAt).toLocaleDateString([], {
-                          month: "short",
-                          day: "numeric",
-                          year: "numeric",
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })
-                      : "New Draft"}
-                  </span>
-                </span>
+        {/* Center Scrollable Area */}
+        <div className="flex-1 overflow-y-auto px-4 lg:px-8 py-6 space-y-6">
+          {/* Optional Details / Domains / Mood Strip */}
+          {showDetailsPanel && (
+            <div className="bg-[#211E1B] rounded-3xl p-5 border border-[#38322D] shadow-md space-y-4 animate-fade-in">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                {/* Domain Badges */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-semibold text-[#B7AFA7] mr-1">Domains:</span>
+                  {DOMAINS.map((d) => {
+                    const isSelected = selectedDomains.includes(d.id);
+                    return (
+                      <button
+                        key={d.id}
+                        type="button"
+                        onClick={() => toggleDomain(d.id)}
+                        className={`px-3 py-1 rounded-full text-xs font-semibold transition-all cursor-pointer ${
+                          isSelected
+                            ? "bg-[#6E9A7B] text-white shadow-xs"
+                            : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border border-[#38322D]"
+                        }`}
+                      >
+                        {d.label}
+                      </button>
+                    );
+                  })}
+                </div>
 
-                {justSavedNotice && (
-                  <span className="flex items-center space-x-1 text-[#6E9A7B] font-medium">
-                    <ShieldCheck className="w-3 h-3" />
-                    <span>Saved to Cloud Firestore & Local Mirror</span>
-                  </span>
-                )}
+                {/* Mood Selector */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs font-semibold text-[#B7AFA7] mr-1">Mood:</span>
+                  {MOOD_OPTIONS.map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setEntryMood(m.id)}
+                      className={`px-2.5 py-1 rounded-xl text-xs font-semibold transition-all flex items-center gap-1 cursor-pointer ${
+                        entryMood === m.id
+                          ? "bg-[#C89B3C]/20 border border-[#C89B3C] text-[#F3EFE8] shadow-xs"
+                          : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border border-[#38322D]"
+                      }`}
+                    >
+                      <span>{m.icon}</span>
+                      <span className="capitalize">{m.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Tags Input */}
+              <div className="flex items-center gap-2 pt-3 border-t border-[#38322D]">
+                <Tag className="w-3.5 h-3.5 text-[#C89B3C]" />
+                <input
+                  type="text"
+                  placeholder="Custom tags (comma separated, e.g. sleep, deadlines, nature, exercise)"
+                  value={tagsInput}
+                  onChange={(e) => setTagsInput(e.target.value)}
+                  className="text-xs text-[#F3EFE8] bg-transparent placeholder-[#7A746E] focus:outline-none w-full"
+                />
               </div>
             </div>
+          )}
 
-            {/* Reflection Depth Toggle (Directive 12: Quick, Reflect, Deep) */}
-            <div className="flex items-center space-x-1 bg-[#171513] p-1 rounded-xl border border-[#38322D] shrink-0 text-xs">
-              <button
-                id="btn-journal-depth-quick"
-                type="button"
-                onClick={() => setDepth("quick")}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
-                  depth === "quick"
-                    ? "bg-[#C89B3C] text-[#171513] font-semibold shadow-xs"
-                    : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-                }`}
-                title="Quick Mode: Fast emotional check-in and low latency note"
-              >
-                <Zap className="w-3 h-3" />
-                <span>Quick</span>
-              </button>
+          {/* Conversation History */}
+          <div className="space-y-5">
+            {(!activeEntry || activeEntry.messages.length === 0) && (
+              <div className="text-center py-8 space-y-4 max-w-xl mx-auto">
+                <div className="w-12 h-12 rounded-2xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] mx-auto shadow-md">
+                  <Sparkles className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-serif font-bold text-[#F3EFE8]">
+                    Mindful Reflection & Recommendation Studio
+                  </h3>
+                  <p className="text-xs text-[#B7AFA7] mt-1 max-w-md mx-auto leading-relaxed">
+                    Write freely about your state of mind, ask for helpful summaries, brainstorm creative routines, or request activity recommendations you can add directly to your Google Calendar.
+                  </p>
+                </div>
 
-              <button
-                id="btn-journal-depth-reflect"
-                type="button"
-                onClick={() => setDepth("reflect")}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
-                  depth === "reflect"
-                    ? "bg-[#738F85] text-[#171513] font-semibold shadow-xs"
-                    : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-                }`}
-                title="Reflect Mode: Thoughtful exploration of meaning, feelings and goals"
-              >
-                <Sparkles className="w-3 h-3" />
-                <span>Reflect</span>
-              </button>
+                {/* Prompt Starters */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left pt-2">
+                  {PROMPT_STARTERS.map((starter, i) => (
+                    <button
+                      key={i}
+                      onClick={() => setInputText(starter.text + " ")}
+                      className="p-3.5 rounded-2xl bg-[#211E1B] border border-[#38322D] hover:border-[#C89B3C] hover:bg-[#282420] transition-all text-left group shadow-xs cursor-pointer"
+                    >
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-[#C89B3C] block mb-1">
+                        {starter.tag} • {starter.title}
+                      </span>
+                      <p className="text-xs text-[#B7AFA7] line-clamp-2 leading-relaxed group-hover:text-[#F3EFE8]">
+                        {starter.text}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
 
-              <button
-                id="btn-journal-depth-deep"
-                type="button"
-                onClick={() => setDepth("deep")}
-                className={`flex items-center space-x-1 px-2.5 py-1.5 rounded-lg transition-all cursor-pointer ${
-                  depth === "deep"
-                    ? "bg-[#C89B3C] text-[#171513] font-semibold shadow-xs"
-                    : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-                }`}
-                title="Deep Mode: Deep reasoning across habits, context, and patterns"
-              >
-                <Brain className="w-3 h-3" />
-                <span>Deep</span>
-              </button>
-            </div>
-          </div>
+            {/* Render Existing Message Turns */}
+            {activeEntry?.messages?.map((msg, msgIdx) => {
+              const isUser = msg.role === "user";
+              const timeStr = new Date(msg.timestamp).toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
 
-          {/* Metadata Row: Wellbeing Domains & Mood Tag */}
-          <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1 text-xs">
-            {/* Wellbeing Domains Selection */}
-            <div className="flex items-center space-x-1.5">
-              <span className="text-[11px] text-[#B7AFA7] font-medium mr-1">
-                Domain:
-              </span>
-              {DOMAINS.map((dom) => {
-                const isSelected = selectedDomains.includes(dom.id);
-                return (
-                  <button
-                    key={dom.id}
-                    id={`btn-domain-${dom.id}`}
-                    type="button"
-                    onClick={() => toggleDomain(dom.id)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all border cursor-pointer ${
-                      isSelected
-                        ? "bg-[#C89B3C] text-[#171513] border-[#C89B3C] font-semibold"
-                        : "bg-[#171513] text-[#B7AFA7] border-[#38322D] hover:text-[#F3EFE8]"
+              return (
+                <div
+                  key={msg.id}
+                  className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"} animate-fade-in`}
+                >
+                  {!isUser && (
+                    <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shrink-0 mt-1 shadow-xs">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                  )}
+
+                  <div
+                    className={`max-w-2xl rounded-3xl p-5 shadow-md relative group space-y-3 ${
+                      isUser
+                        ? "bg-[#2C2723] border border-[#443D36] text-[#F3EFE8] rounded-br-xs"
+                        : "bg-[#211E1B] border border-[#38322D] text-[#F3EFE8] rounded-bl-xs"
                     }`}
                   >
-                    {dom.label}
-                  </button>
-                );
-              })}
-            </div>
+                    {/* Header */}
+                    <div className="flex items-center justify-between gap-4 pb-2 border-b border-[#38322D]">
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[11px] font-bold ${isUser ? "text-[#C89B3C]" : "text-[#6E9A7B]"}`}>
+                          {isUser ? user.displayName || "You" : "Gemini Mindful Guide"}
+                        </span>
+                        {!isUser && activeEntry?.modelUsed && (
+                          <span className="px-2 py-0.5 rounded text-[9px] font-mono bg-[#171513] text-[#C89B3C] border border-[#38322D]">
+                            {activeEntry.modelUsed}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-[#7A746E]">
+                          {timeStr}
+                        </span>
+                        <button
+                          onClick={() => handleCopyMessage(msg.id, msg.text)}
+                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] transition-opacity cursor-pointer"
+                          title="Copy text"
+                        >
+                          {copiedMsgId === msg.id ? (
+                            <Check className="w-3.5 h-3.5 text-[#6E9A7B]" />
+                          ) : (
+                            <Copy className="w-3.5 h-3.5" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
 
-            {/* Mood Picker */}
-            <div className="flex items-center space-x-2">
-              <span className="text-[11px] text-[#B7AFA7]">Mood:</span>
-              <select
-                id="select-journal-mood"
-                value={entryMood}
-                onChange={(e) => setEntryMood(e.target.value)}
-                className="bg-[#171513] text-[#F3EFE8] border border-[#38322D] rounded-lg px-2 py-1 text-xs outline-none focus:border-[#C89B3C]/60 cursor-pointer"
-              >
-                {MOOD_OPTIONS.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.icon} {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </div>
+                    {/* Text Body */}
+                    <div className="text-xs sm:text-sm whitespace-pre-wrap leading-relaxed text-[#EAE6DF]">
+                      {msg.text}
+                    </div>
 
-        {/* Editor Main Writing Area */}
-        <div className="flex-1 p-4 sm:p-6 overflow-y-auto">
-          <div className="max-w-3xl mx-auto space-y-4">
-            <textarea
-              id="input-journal-content"
-              ref={textareaRef}
-              value={rawText}
-              onChange={(e) => setRawText(e.target.value)}
-              placeholder="What experiences, thoughts, or emotions are on your mind today? Write freely with complete privacy..."
-              className="w-full min-h-[340px] bg-transparent text-sm sm:text-base text-[#F3EFE8] placeholder-[#B7AFA7]/50 focus:outline-none resize-none leading-relaxed font-sans"
-            />
+                    {/* Direct Suggested Activities & Calendar Integration Cards */}
+                    {msg.suggestedActivities && msg.suggestedActivities.length > 0 && (
+                      <div className="mt-4 pt-3 border-t border-[#38322D] space-y-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <CalendarPlus className="w-4 h-4 text-[#C89B3C]" />
+                            <h4 className="text-xs font-bold text-[#F3EFE8]">
+                              Recommended Activities & Calendar Scheduling
+                            </h4>
+                          </div>
+                          <span className="text-[10px] text-[#B7AFA7]">1-Click Sync</span>
+                        </div>
 
-            {/* Optional Tags input */}
-            <div className="pt-3 border-t border-[#38322D] flex items-center space-x-2 text-xs">
-              <Tag className="w-3.5 h-3.5 text-[#B7AFA7]" />
-              <input
-                id="input-journal-tags"
-                type="text"
-                value={tagsInput}
-                onChange={(e) => setTagsInput(e.target.value)}
-                placeholder="Optional tags (e.g. sleep, badminton, gratitude, morning)..."
-                className="w-full bg-transparent text-[#F3EFE8] placeholder-[#B7AFA7]/40 focus:outline-none text-xs"
-              />
-            </div>
-          </div>
-        </div>
+                        <div className="grid grid-cols-1 gap-2.5">
+                          {msg.suggestedActivities.map((act, actIdx) => {
+                            const actKey = `${msg.id}_${actIdx}`;
+                            const isScheduled = !!scheduledActivityIds[actKey];
+                            const isCurrentlyScheduling = schedulingActivityId === actKey;
+                            const parsedSchedule = parseActivityScheduleDateTime(act);
 
-        {/* Editor Bottom Action Bar */}
-        <div className="p-4 border-t border-[#38322D] bg-[#211E1B] shrink-0">
-          <div className="max-w-3xl mx-auto flex items-center justify-between">
-            <div className="flex items-center space-x-3 text-xs text-[#B7AFA7]">
-              <span>{rawText.length} characters</span>
-              <span>•</span>
-              <span className="capitalize">{depth} reflection mode</span>
-            </div>
+                            return (
+                              <div
+                                key={actIdx}
+                                className="p-3.5 rounded-2xl bg-[#171513] border border-[#38322D] hover:border-[#484038] transition-all space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                                      <span className="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-[#C89B3C]/15 text-[#C89B3C] border border-[#C89B3C]/30">
+                                        {act.domain}
+                                      </span>
+                                      <span className="flex items-center gap-1 text-[10px] text-[#B7AFA7]">
+                                        <Clock className="w-3 h-3 text-[#C89B3C]" />
+                                        <span>{act.durationMinutes} mins</span>
+                                      </span>
+                                      <span className="flex items-center gap-1 text-[10px] text-[#6E9A7B] font-semibold bg-[#6E9A7B]/10 px-2 py-0.5 rounded-md border border-[#6E9A7B]/20">
+                                        <Calendar className="w-3 h-3" />
+                                        <span>{parsedSchedule.explanation.replace("Scheduled for ", "")}</span>
+                                      </span>
+                                    </div>
+                                    <h5 className="text-xs font-bold text-[#F3EFE8]">
+                                      {act.title}
+                                    </h5>
+                                  </div>
 
-            <div className="flex items-center space-x-3">
-              {activeEntry && (
-                <button
-                  id="btn-journal-delete-active"
-                  type="button"
-                  onClick={() => setDeleteTargetId(activeEntry.id)}
-                  className="flex items-center space-x-1.5 px-3 py-2 text-xs text-[#B86B6B] hover:bg-[#B86B6B]/15 rounded-xl transition-colors cursor-pointer"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Delete Entry</span>
-                </button>
-              )}
+                                  {/* Direct Add / Configure Google Calendar Action Button */}
+                                  <button
+                                    id={`btn-schedule-activity-${actKey}`}
+                                    onClick={() => handleOpenScheduleModal(act, actKey)}
+                                    disabled={isScheduled || isCurrentlyScheduling}
+                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all shrink-0 cursor-pointer ${
+                                      isScheduled
+                                        ? "bg-[#6E9A7B]/20 text-[#6E9A7B] border border-[#6E9A7B]/40"
+                                        : "bg-[#C89B3C] text-[#171513] hover:bg-[#b98c2d] shadow-sm disabled:opacity-50"
+                                    }`}
+                                    title={isScheduled ? "Event created on Google Calendar" : "Click to review date & add to Google Calendar"}
+                                  >
+                                    {isCurrentlyScheduling ? (
+                                      <>
+                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        <span>Scheduling...</span>
+                                      </>
+                                    ) : isScheduled ? (
+                                      <>
+                                        <Check className="w-3.5 h-3.5" />
+                                        <span>On Calendar</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <CalendarPlus className="w-3.5 h-3.5" />
+                                        <span>Add to Calendar</span>
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
 
-              <button
-                id="btn-save-journal-entry"
-                type="button"
-                onClick={() => handleSave()}
-                disabled={!rawText.trim() || isSaving}
-                className="flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] disabled:opacity-40 text-[#171513] font-semibold text-xs transition-all shadow-sm cursor-pointer disabled:cursor-not-allowed"
-              >
-                {isSaving ? (
-                  <>
-                    <div className="w-3.5 h-3.5 border-2 border-[#171513] border-t-transparent rounded-full animate-spin" />
-                    <span>Saving...</span>
-                  </>
-                ) : (
-                  <>
-                    <Save className="w-3.5 h-3.5" />
-                    <span>Save Reflection</span>
-                  </>
+                                <p className="text-[11px] text-[#B7AFA7] leading-relaxed">
+                                  {act.description}
+                                </p>
+
+                                {act.reason && (
+                                  <div className="p-2 rounded-xl bg-[#211E1B] border border-[#38322D] text-[10px] text-[#C89B3C] flex items-center gap-1.5">
+                                    <Sparkles className="w-3 h-3 shrink-0" />
+                                    <span>{act.reason}</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {/* Cognitive Analysis Card when available */}
+            {activeEntry?.analysis && (
+              <div className="max-w-2xl bg-[#211E1B] border border-[#38322D] rounded-3xl p-5 shadow-md space-y-3.5 animate-fade-in ml-11">
+                <div className="flex items-center justify-between border-b border-[#38322D] pb-2.5">
+                  <div className="flex items-center gap-2 text-xs font-bold text-[#F3EFE8]">
+                    <Brain className="w-4 h-4 text-[#C89B3C]" />
+                    <span>Cognitive Synthesis & Emotional Insights</span>
+                  </div>
+                  {activeEntry.analysis.sentiment && (
+                    <span className="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-[#C89B3C]/15 border border-[#C89B3C]/30 text-[#C89B3C]">
+                      {activeEntry.analysis.sentiment}
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
+                  {activeEntry.analysis.primaryEmotion && (
+                    <div className="p-2.5 rounded-2xl bg-[#171513] border border-[#38322D]">
+                      <span className="text-[10px] text-[#7A746E] block font-medium">Primary Emotion</span>
+                      <span className="font-bold text-[#F3EFE8] capitalize">
+                        {activeEntry.analysis.primaryEmotion}
+                      </span>
+                    </div>
+                  )}
+                  {activeEntry.analysis.intensity !== undefined && (
+                    <div className="p-2.5 rounded-2xl bg-[#171513] border border-[#38322D]">
+                      <span className="text-[10px] text-[#7A746E] block font-medium">Intensity</span>
+                      <span className="font-bold text-[#F3EFE8]">
+                        {activeEntry.analysis.intensity} / 5
+                      </span>
+                    </div>
+                  )}
+                  {activeEntry.summary && (
+                    <div className="p-2.5 rounded-2xl bg-[#171513] border border-[#38322D] col-span-2 sm:col-span-1">
+                      <span className="text-[10px] text-[#7A746E] block font-medium">Core Takeaway</span>
+                      <span className="font-semibold text-[#F3EFE8] line-clamp-1">
+                        {activeEntry.summary}
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                {activeEntry.themes && activeEntry.themes.length > 0 && (
+                  <div className="flex items-center gap-1.5 flex-wrap pt-1">
+                    <span className="text-[11px] text-[#B7AFA7]">Observed Patterns:</span>
+                    {activeEntry.themes.map((t, idx) => (
+                      <span
+                        key={idx}
+                        className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-[#171513] border border-[#38322D] text-[#6E9A7B]"
+                      >
+                        #{t}
+                      </span>
+                    ))}
+                  </div>
                 )}
-              </button>
-            </div>
+              </div>
+            )}
+
+            {/* Generating Shimmer Indicator */}
+            {isGenerating && (
+              <div className="flex gap-3 justify-start animate-fade-in">
+                <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shrink-0 mt-1 animate-pulse">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div className="bg-[#211E1B] border border-[#38322D] rounded-3xl rounded-bl-xs p-4 shadow-md flex items-center gap-3 text-xs text-[#B7AFA7]">
+                  <Loader2 className="w-4 h-4 animate-spin text-[#C89B3C]" />
+                  <span>Gemini is synthesizing patterns, brainstorming recommendations, and preparing insights...</span>
+                </div>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
           </div>
         </div>
-      </div>
+
+        {/* BOTTOM: Composer & Reflection Triggers (Warm Dark Themed) */}
+        <footer className="p-4 bg-[#211E1B] border-t border-[#38322D] shrink-0">
+          <div className="max-w-4xl mx-auto space-y-2">
+            <div className="relative bg-[#171513] border border-[#38322D] rounded-3xl p-3 focus-within:border-[#C89B3C] focus-within:ring-2 focus-within:ring-[#C89B3C]/15 transition-all shadow-md">
+              <textarea
+                id="journal-composer-input"
+                rows={3}
+                placeholder="Share your thoughts, ask for activity recommendations, or brainstorm routines... (Cmd+Enter to reflect)"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={isGenerating}
+                className="w-full bg-transparent text-sm text-[#F3EFE8] placeholder-[#7A746E] focus:outline-none resize-none px-2 py-1 leading-relaxed"
+              />
+
+              <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#38322D]/70 px-2">
+                <div className="flex items-center gap-2 text-[11px] text-[#7A746E]">
+                  <span className="hidden sm:inline">Press</span>
+                  <kbd className="hidden sm:inline px-1.5 py-0.5 bg-[#211E1B] border border-[#38322D] rounded text-[10px] font-mono text-[#B7AFA7]">
+                    ⌘ + Enter
+                  </kbd>
+                  <span className="hidden sm:inline">to converse with Gemini</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  {/* Direct Save Note Button */}
+                  <button
+                    id="save-note-direct-btn"
+                    type="button"
+                    onClick={handleSaveDirectly}
+                    disabled={isSaving || isGenerating || (!inputText.trim() && !title.trim())}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#38322D] text-xs font-semibold text-[#B7AFA7] hover:bg-[#211E1B] hover:text-[#F3EFE8] transition-colors disabled:opacity-40 cursor-pointer"
+                    title="Save thoughts directly without AI reflection"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>{isSaving ? "Saving..." : "Save Note"}</span>
+                  </button>
+
+                  {/* Reflect with Gemini Button */}
+                  <button
+                    id="reflect-with-gemini-btn"
+                    type="button"
+                    onClick={handleReflectWithGemini}
+                    disabled={isGenerating || !inputText.trim()}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-[#C89B3C] text-[#171513] text-xs font-bold hover:bg-[#b98c2d] transition-all shadow-sm disabled:opacity-40 active:scale-98 cursor-pointer"
+                  >
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Reflecting...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Reflect with Gemini</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </footer>
+      </main>
 
       {/* Delete Confirmation Modal */}
       <DeleteConfirmModal
-        isOpen={Boolean(deleteTargetId)}
+        isOpen={deleteModalState.isOpen}
         title="Delete Reflection Entry"
-        message="Are you sure you want to permanently remove this journal entry? This will delete the entry from both Cloud Firestore and local storage."
-        itemName={targetDeleteEntry?.title || "Journal entry"}
+        message={`Are you sure you want to permanently delete "${deleteModalState.entryTitle}"? This action cannot be undone.`}
         onConfirm={async () => {
-          if (deleteTargetId) {
-            await onDeleteEntry(deleteTargetId);
-            setDeleteTargetId(null);
-            handleStartNew();
+          if (deleteModalState.entryId) {
+            await onDeleteEntry(deleteModalState.entryId);
           }
+          setDeleteModalState({ isOpen: false, entryId: null, entryTitle: "" });
         }}
-        onClose={() => setDeleteTargetId(null)}
+        onCancel={() => setDeleteModalState({ isOpen: false, entryId: null, entryTitle: "" })}
+      />
+
+      {/* Smart Google Calendar Activity Scheduling Modal */}
+      <ScheduleActivityModal
+        isOpen={modalActivityState.isOpen}
+        activity={modalActivityState.activity}
+        onClose={() =>
+          setModalActivityState({
+            isOpen: false,
+            activity: null,
+            actKey: null,
+          })
+        }
+        onConfirmSchedule={handleConfirmScheduleFromModal}
+        isScheduling={!!schedulingActivityId}
       />
     </div>
   );

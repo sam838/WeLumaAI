@@ -1,5 +1,5 @@
 import React from "react";
-import { Sparkles, LogOut, ShieldCheck, User, Menu, Heart } from "lucide-react";
+import { Sparkles, LogOut, ShieldCheck, User, Menu, Heart, Calendar } from "lucide-react";
 import { AuthUserState, NavigationTab } from "../types";
 
 interface HeaderProps {
@@ -8,6 +8,7 @@ interface HeaderProps {
   onNavigate: (tab: NavigationTab) => void;
   onSignOut: () => void;
   onToggleMobileMenu?: () => void;
+  onOpenCalendarModal?: () => void;
   syncStatus?: "synced" | "saving" | "error";
 }
 
@@ -17,6 +18,7 @@ export const Header: React.FC<HeaderProps> = ({
   onNavigate,
   onSignOut,
   onToggleMobileMenu,
+  onOpenCalendarModal,
   syncStatus = "synced",
 }) => {
   return (
@@ -85,6 +87,19 @@ export const Header: React.FC<HeaderProps> = ({
                 : "Cloud & Local Synced"}
             </span>
           </div>
+
+          {/* Google Calendar Hub Shortcut */}
+          {onOpenCalendarModal && (
+            <button
+              id="btn-header-calendar"
+              onClick={onOpenCalendarModal}
+              className="flex items-center space-x-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border border-[#38322D] hover:border-[#C89B3C]/50 bg-[#171513] hover:bg-[#2c2723] text-xs text-[#C89B3C] transition-all cursor-pointer font-medium"
+              title="Open Google Calendar Hub"
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Calendar</span>
+            </button>
+          )}
 
           {/* Profile Shortcut */}
           <button
