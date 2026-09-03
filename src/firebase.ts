@@ -3,7 +3,6 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
-  signInAnonymously,
   signOut,
   onAuthStateChanged,
   updateProfile,
@@ -23,7 +22,6 @@ import {
   getDocFromServer,
   getDoc,
 } from "firebase/firestore";
-import firebaseAppletConfig from "../firebase-applet-config.json";
 import {
   AuthUserState,
   JournalInteraction,
@@ -59,15 +57,17 @@ export interface FirestoreErrorInfo {
   };
 }
 
+// Configuration is resolved exclusively from environment variables (.env via import.meta.env)
+const envProjectId = (import.meta.env.VITE_FIREBASE_PROJECT_ID || "").trim();
 const rawConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || (firebaseAppletConfig as any)?.apiKey || "",
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (firebaseAppletConfig as any)?.authDomain || "",
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || (firebaseAppletConfig as any)?.projectId || "",
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || (firebaseAppletConfig as any)?.storageBucket || "",
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || (firebaseAppletConfig as any)?.messagingSenderId || "",
-  appId: import.meta.env.VITE_FIREBASE_APP_ID || (firebaseAppletConfig as any)?.appId || "",
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || (firebaseAppletConfig as any)?.measurementId || "",
-  firestoreDatabaseId: import.meta.env.VITE_FIREBASE_DATABASE_ID || (firebaseAppletConfig as any)?.firestoreDatabaseId || undefined,
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY || "").trim(),
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (envProjectId ? `${envProjectId}.firebaseapp.com` : "")).trim(),
+  projectId: envProjectId,
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || (envProjectId ? `${envProjectId}.firebasestorage.app` : "")).trim(),
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "").trim(),
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID || "").trim(),
+  measurementId: (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "").trim(),
+  firestoreDatabaseId: (import.meta.env.VITE_FIREBASE_DATABASE_ID || "").trim() || undefined,
 };
 
 function checkIsConfigValid(cfg: typeof rawConfig): boolean {
@@ -192,7 +192,7 @@ export function setLocalUser(user: AuthUserState | null): void {
 export async function signInWithGoogle(): Promise<User> {
   if (!isFirebaseConfigured || !auth) {
     throw new Error(
-      "Firebase authentication credentials are not configured. Click 'Start Instant Sandbox Session' below to use the application immediately."
+      "Firebase authentication credentials are not configured in environment variables. Please check your Firebase settings."
     );
   }
   try {
@@ -206,47 +206,20 @@ export async function signInWithGoogle(): Promise<User> {
     if (code === "auth/unauthorized-domain" || msg.includes("unauthorized-domain")) {
       const currentHost = typeof window !== "undefined" ? window.location.hostname : "current domain";
       throw new Error(
-        `Domain not authorized: "${currentHost}" is not in Firebase Authorized Domains. Use the Instant Sandbox Session to use the app immediately!`
+        `Domain not authorized: "${currentHost}" is not in Firebase Authorized Domains. Please add it to your Firebase Console under Authentication > Settings > Authorized domains.`
       );
     }
     if (code === "auth/operation-not-allowed") {
-      throw new Error("Google Sign-In is disabled in Firebase Console. You can use Instant Sandbox Session.");
+      throw new Error("Google Sign-In is disabled in Firebase Console. Please enable the Google provider in Firebase Authentication.");
     }
     if (code === "auth/popup-blocked") {
-      throw new Error("Popup blocked by browser. Please enable popups or use Instant Sandbox Session.");
+      throw new Error("Popup blocked by browser. Please allow popups for this site and try signing in again.");
     }
     if (code === "auth/popup-closed-by-user") {
-      throw new Error("Sign-in popup was closed. Please click 'Sign in with Google' again.");
+      throw new Error("Sign-in popup was closed before completing. Please click 'Sign in with Google Account' again.");
     }
-    throw new Error(error?.message || "Google sign-in failed. Try Instant Sandbox Session.");
+    throw new Error(error?.message || "Google sign-in failed. Please try again.");
   }
-}
-
-export async function signInGuest(): Promise<User | AuthUserState> {
-  if (!isFirebaseConfigured || !auth) {
-    return createSandboxUser();
-  }
-  try {
-    const result = await signInAnonymously(auth);
-    return result.user;
-  } catch (error: any) {
-    console.warn("Firebase Anonymous Sign-In error, falling back to sandbox:", error);
-    return createSandboxUser();
-  }
-}
-
-export function createSandboxUser(): AuthUserState {
-  const existing = getLocalUser();
-  if (existing) return existing;
-  const newUser: AuthUserState = {
-    uid: `sandbox_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-    displayName: "Wellbeing Explorer",
-    email: "explorer@wellbeing.local",
-    photoURL: null,
-    isAnonymous: true,
-  };
-  setLocalUser(newUser);
-  return newUser;
 }
 
 export async function signOutUser(): Promise<void> {
@@ -261,22 +234,28 @@ export async function signOutUser(): Promise<void> {
 }
 
 export function mapFirebaseUser(user: User | null): AuthUserState | null {
-  if (!user) return null;
+  if (!user || user.isAnonymous) return null;
   return {
     uid: user.uid,
-    displayName: user.displayName || (user.isAnonymous ? "Guest Explorer" : "Mindful Member"),
+    displayName: user.displayName || "Mindful Member",
     email: user.email,
     photoURL: user.photoURL,
-    isAnonymous: user.isAnonymous,
+    isAnonymous: false,
   };
 }
 
 export function subscribeAuthState(callback: (user: AuthUserState | null) => void): Unsubscribe {
+  // Clear any stale anonymous or sandbox user from previous sessions
   const localUser = getLocalUser();
   if (localUser) {
-    getUserProfile(localUser.uid).then((profile) => {
-      callback({ ...localUser, profile });
-    });
+    if (localUser.isAnonymous || localUser.uid?.startsWith("sandbox_")) {
+      setLocalUser(null);
+      callback(null);
+    } else {
+      getUserProfile(localUser.uid).then((profile) => {
+        callback({ ...localUser, profile });
+      });
+    }
   }
 
   if (!isFirebaseConfigured || !auth) {
@@ -284,20 +263,19 @@ export function subscribeAuthState(callback: (user: AuthUserState | null) => voi
   }
 
   return onAuthStateChanged(auth, async (user) => {
-    if (user) {
+    if (user && !user.isAnonymous) {
       const mapped = mapFirebaseUser(user);
       if (mapped) {
+        setLocalUser(mapped);
         const profile = await getUserProfile(mapped.uid);
         callback({ ...mapped, profile });
-      }
-    } else {
-      const currentLocal = getLocalUser();
-      if (currentLocal) {
-        const profile = await getUserProfile(currentLocal.uid);
-        callback({ ...currentLocal, profile });
       } else {
+        setLocalUser(null);
         callback(null);
       }
+    } else {
+      setLocalUser(null);
+      callback(null);
     }
   });
 }
@@ -395,9 +373,9 @@ export async function updateUserProfileAndAccount(
   return {
     uid: userId,
     displayName: updates.displayName || (auth?.currentUser?.displayName ?? "Member"),
-    email: auth?.currentUser?.email || (userId.startsWith("sandbox_") ? "sandbox@wellbeing.local" : null),
+    email: auth?.currentUser?.email || null,
     photoURL: updates.photoURL !== undefined ? updates.photoURL : (auth?.currentUser?.photoURL ?? null),
-    isAnonymous: auth?.currentUser?.isAnonymous ?? userId.startsWith("sandbox_"),
+    isAnonymous: false,
     profile: profileWithMeta,
   };
 }
@@ -680,6 +658,46 @@ export function saveLocalCheckIn(userId: string, checkIn: DailyCheckInState): vo
   } catch (e) {
     console.warn("Local check-in save error:", e);
   }
+}
+
+export async function saveCheckInToFirestore(
+  userId: string,
+  checkIn: DailyCheckInState
+): Promise<void> {
+  if (!userId) return;
+  // Always update local cache first
+  saveLocalCheckIn(userId, checkIn);
+
+  if (!isFirebaseConfigured || !db) return;
+
+  const sanitized = sanitizeFirestorePayload(checkIn);
+  try {
+    await setDoc(doc(db, "users", userId, "checkins", checkIn.date), sanitized, { merge: true });
+    await setDoc(doc(db, "users", userId), { latestCheckIn: sanitized }, { merge: true });
+  } catch (err) {
+    console.warn("Firestore saveCheckInToFirestore notice:", err);
+  }
+}
+
+export async function getCheckInFromFirestore(
+  userId: string,
+  date: string
+): Promise<DailyCheckInState | null> {
+  if (!userId) return null;
+  const local = getLocalCheckIn(userId, date);
+  if (!isFirebaseConfigured || !db) return local;
+
+  try {
+    const snap = await getDoc(doc(db, "users", userId, "checkins", date));
+    if (snap.exists()) {
+      const data = snap.data() as DailyCheckInState;
+      saveLocalCheckIn(userId, data);
+      return data;
+    }
+  } catch (err) {
+    console.warn("Firestore getCheckInFromFirestore notice:", err);
+  }
+  return local;
 }
 
 /* =========================================================================

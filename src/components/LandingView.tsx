@@ -13,8 +13,6 @@ import {
 
 interface LandingViewProps {
   onSignInGoogle: () => Promise<void>;
-  onSignInGuest: () => Promise<void>;
-  onStartSandbox: () => void;
   loading: boolean;
   errorMessage: string | null;
   onClearError: () => void;
@@ -22,29 +20,18 @@ interface LandingViewProps {
 
 export const LandingView: React.FC<LandingViewProps> = ({
   onSignInGoogle,
-  onSignInGuest,
-  onStartSandbox,
   loading,
   errorMessage,
   onClearError,
 }) => {
-  const [activeAction, setActiveAction] = useState<"google" | "guest" | null>(null);
+  const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
 
   const handleGoogleClick = async () => {
-    setActiveAction("google");
+    setIsSigningIn(true);
     try {
       await onSignInGoogle();
     } finally {
-      setActiveAction(null);
-    }
-  };
-
-  const handleGuestClick = async () => {
-    setActiveAction("guest");
-    try {
-      await onSignInGuest();
-    } finally {
-      setActiveAction(null);
+      setIsSigningIn(false);
     }
   };
 
@@ -105,45 +92,35 @@ export const LandingView: React.FC<LandingViewProps> = ({
               </div>
             </div>
 
-            {/* Error Notification with Sandbox option */}
+            {/* Error Notification */}
             {errorMessage && (
-              <div className="mb-6 p-4 rounded-xl bg-[#B86B6B]/15 border border-[#B86B6B]/40 text-[#F3EFE8] text-xs flex flex-col space-y-3">
+              <div className="mb-6 p-4 rounded-xl bg-[#B86B6B]/15 border border-[#B86B6B]/40 text-[#F3EFE8] text-xs flex items-start justify-between space-x-3">
                 <div className="flex items-start space-x-3">
                   <AlertCircle className="w-5 h-5 text-[#B86B6B] shrink-0 mt-0.5" />
-                  <div className="flex-1">
+                  <div>
                     <p className="font-semibold text-[#F3EFE8]">Sign-In Notice</p>
                     <p className="text-[#B7AFA7] mt-0.5 leading-relaxed">{errorMessage}</p>
                   </div>
-                  <button
-                    onClick={onClearError}
-                    className="text-xs text-[#C89B3C] hover:text-[#F3EFE8] font-semibold cursor-pointer"
-                  >
-                    Dismiss
-                  </button>
                 </div>
-                <div className="pt-2 border-t border-[#B86B6B]/30 flex justify-end">
-                  <button
-                    id="btn-error-enter-sandbox"
-                    onClick={onStartSandbox}
-                    className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] font-semibold text-xs transition-colors cursor-pointer"
-                  >
-                    <span>Start Instant Sandbox Session</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <button
+                  onClick={onClearError}
+                  className="text-xs text-[#C89B3C] hover:text-[#F3EFE8] font-semibold cursor-pointer shrink-0"
+                >
+                  Dismiss
+                </button>
               </div>
             )}
 
-            {/* Auth Action Buttons */}
+            {/* Auth Action Buttons - Exclusively Google Account Login */}
             <div className="space-y-3">
               {/* Primary: Google Sign In */}
               <button
                 id="btn-google-signin"
                 onClick={handleGoogleClick}
-                disabled={loading}
+                disabled={loading || isSigningIn}
                 className="w-full flex items-center justify-center space-x-3 px-5 py-3.5 rounded-xl bg-[#F3EFE8] hover:bg-white text-[#171513] font-semibold text-sm transition-all shadow-md hover:shadow-lg disabled:opacity-50 cursor-pointer"
               >
-                {activeAction === "google" ? (
+                {isSigningIn || loading ? (
                   <div className="w-5 h-5 border-2 border-[#171513] border-t-transparent rounded-full animate-spin" />
                 ) : (
                   <svg className="w-5 h-5 shrink-0" viewBox="0 0 24 24">
@@ -165,33 +142,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
                     />
                   </svg>
                 )}
-                <span>Sign in with Google</span>
-              </button>
-
-              {/* Instant Sandbox Session */}
-              <button
-                id="btn-sandbox-signin"
-                onClick={onStartSandbox}
-                disabled={loading}
-                className="w-full flex items-center justify-center space-x-2 px-5 py-3 rounded-xl bg-[#C89B3C]/15 hover:bg-[#C89B3C]/25 text-[#F3EFE8] border border-[#C89B3C]/40 font-medium text-xs sm:text-sm transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <Sparkles className="w-4 h-4 text-[#C89B3C]" />
-                <span>Instant Sandbox Session (Local / Zero Wait)</span>
-              </button>
-
-              {/* Guest / Anonymous Mode */}
-              <button
-                id="btn-guest-signin"
-                onClick={handleGuestClick}
-                disabled={loading}
-                className="w-full flex items-center justify-center space-x-2 px-5 py-2.5 rounded-xl bg-[#171513] hover:bg-[#2c2723] text-[#B7AFA7] hover:text-[#F3EFE8] border border-[#38322D] font-medium text-xs transition-all disabled:opacity-50 cursor-pointer"
-              >
-                {activeAction === "guest" ? (
-                  <div className="w-4 h-4 border-2 border-[#B7AFA7] border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <ArrowRight className="w-3.5 h-3.5 text-[#B7AFA7]" />
-                )}
-                <span>Continue as Guest</span>
+                <span>Sign in with Google Account</span>
               </button>
             </div>
 

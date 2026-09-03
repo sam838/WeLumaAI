@@ -68,8 +68,23 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const [stressLevel, setStressLevel] = useState<number>(
     todayCheckIn?.stress || 2
   );
+  const [checkInNotes, setCheckInNotes] = useState<string>(
+    todayCheckIn?.notes || ""
+  );
   const [checkInSavedNotice, setCheckInSavedNotice] = useState(false);
   const [quickJournalText, setQuickJournalText] = useState("");
+
+  // Sync state when incoming todayCheckIn updates
+  React.useEffect(() => {
+    if (todayCheckIn) {
+      setSelectedMood(todayCheckIn.mood);
+      setEnergyLevel(todayCheckIn.energy);
+      setStressLevel(todayCheckIn.stress);
+      if (todayCheckIn.notes !== undefined) {
+        setCheckInNotes(todayCheckIn.notes);
+      }
+    }
+  }, [todayCheckIn]);
 
   const formattedDate = new Date().toLocaleDateString("en-US", {
     weekday: "long",
@@ -84,6 +99,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
       mood: selectedMood,
       energy: energyLevel,
       stress: stressLevel,
+      notes: checkInNotes.trim() || undefined,
       updatedAt: Date.now(),
     };
     onSaveCheckIn(checkIn);
@@ -241,13 +257,33 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   </div>
                 </div>
 
-                <div className="flex justify-end pt-1">
+                {/* Optional Mindful Note / Intention */}
+                <div>
+                  <label className="block text-xs font-semibold text-[#B7AFA7] mb-1.5">
+                    Mindful Intention / Context Note (Optional)
+                  </label>
+                  <input
+                    id="input-checkin-notes"
+                    type="text"
+                    placeholder="e.g., Well-rested, seeking light movement and an evening reading session"
+                    value={checkInNotes}
+                    onChange={(e) => setCheckInNotes(e.target.value)}
+                    className="w-full px-3.5 py-2.5 rounded-xl bg-[#171513] border border-[#38322D] text-xs text-[#F3EFE8] placeholder-[#7A746E] focus:outline-none focus:border-[#C89B3C] transition-all"
+                  />
+                </div>
+
+                {/* AI Grounding Context Badge */}
+                <div className="p-3 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center space-x-2 text-[11px] text-[#C89B3C]">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    <span>Gemini uses this check-in & your stored preferences across all journal reflections, answers, and activity recommendations.</span>
+                  </div>
                   <button
                     id="btn-save-checkin"
                     type="submit"
-                    className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[#2c2723] hover:bg-[#38322D] text-[#F3EFE8] border border-[#38322D] text-xs font-semibold transition-colors cursor-pointer"
+                    className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] text-xs font-semibold transition-colors shrink-0 shadow-sm cursor-pointer"
                   >
-                    <Check className="w-3.5 h-3.5 text-[#C89B3C]" />
+                    <Check className="w-3.5 h-3.5" />
                     <span>Record Check-In</span>
                   </button>
                 </div>

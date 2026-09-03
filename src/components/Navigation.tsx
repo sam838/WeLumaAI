@@ -238,7 +238,7 @@ export const Navigation: React.FC<NavigationProps> = ({
                   {user.displayName || "Mindful Member"}
                 </p>
                 <p className="text-[10px] text-[#B7AFA7] truncate">
-                  {user.isAnonymous ? "Guest Session" : user.email || "Private Profile"}
+                  {user.email || "Google Account"}
                 </p>
               </div>
             </div>

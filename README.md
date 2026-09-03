@@ -38,18 +38,18 @@ All journal entries and AI reflections are strictly isolated to each authenticat
 
 ## Secret Management Setup
 
-To keep the Gemini API key secure and comply with zero-hardcoding standards, store the credential in Google Cloud Secret Manager and grant the Cloud Run runtime service account permission to read it:
+To keep the Gemini API key secure and comply with zero-hardcoding standards, store the credential in Google Cloud Secret Manager (using secret name `Gemini_Api_Key` or `GEMINI_API_KEY`) and grant the Cloud Run runtime service account permission to read it:
 
 ```bash
-# 1. Create and populate the secret in Secret Manager
-gcloud secrets create GEMINI_API_KEY --replication-policy="automatic"
-echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets versions add GEMINI_API_KEY --data-file=-
+# 1. Create and populate the secret in Secret Manager (Gemini_Api_Key)
+gcloud secrets create Gemini_Api_Key --replication-policy="automatic"
+echo -n "YOUR_GEMINI_API_KEY" | gcloud secrets versions add Gemini_Api_Key --data-file=-
 
 # 2. Identify your Cloud Project Number
 PROJECT_NUMBER=$(gcloud projects describe $(gcloud config get-value project) --format="value(projectNumber)")
 
 # 3. Grant the default Cloud Run service account access to read the secret
-gcloud secrets add-iam-policy-binding GEMINI_API_KEY \
+gcloud secrets add-iam-policy-binding Gemini_Api_Key \
   --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor"
 ```

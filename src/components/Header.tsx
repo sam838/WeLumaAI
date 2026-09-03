@@ -125,7 +125,7 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
             <span className="hidden sm:inline text-xs font-medium max-w-[100px] truncate text-[#F3EFE8]">
-              {user.displayName?.split(" ")[0] || (user.isAnonymous ? "Guest" : "Explorer")}
+              {user.displayName?.split(" ")[0] || "Explorer"}
             </span>
           </button>
 

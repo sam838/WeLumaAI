@@ -35,6 +35,7 @@ import {
 } from "lucide-react";
 import {
   AuthUserState,
+  DailyCheckInState,
   JournalInteraction,
   JournalMessage,
   JournalMode,
@@ -57,6 +58,7 @@ import {
 
 interface JournalViewProps {
   user: AuthUserState;
+  todayCheckIn?: DailyCheckInState | null;
   interactions: JournalInteraction[];
   activeInteractionId: string | null;
   onSelectInteraction: (id: string) => void;
@@ -127,6 +129,7 @@ const PROMPT_STARTERS = [
 
 export const JournalView: React.FC<JournalViewProps> = ({
   user,
+  todayCheckIn,
   interactions,
   activeInteractionId,
   onSelectInteraction,
@@ -740,6 +743,34 @@ export const JournalView: React.FC<JournalViewProps> = ({
             </button>
           </div>
         </header>
+
+        {/* Active Grounding Indicator (Grounds reflections, insights, and recommendations) */}
+        <div className="px-4 lg:px-6 py-2 bg-[#1C1A17] border-b border-[#2C2723] flex items-center justify-between gap-3 text-xs shrink-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 text-[#C89B3C] font-semibold text-[11px] bg-[#C89B3C]/10 border border-[#C89B3C]/20 px-2.5 py-0.5 rounded-full">
+              <Sparkle className="w-3 h-3" />
+              AI Grounding Active
+            </span>
+            {todayCheckIn ? (
+              <span className="text-[11px] text-[#D8D1C7]">
+                Check-in: <strong className="capitalize text-[#F3EFE8]">{todayCheckIn.mood}</strong> (Energy {todayCheckIn.energy}/5, Stress {todayCheckIn.stress}/5)
+                {todayCheckIn.notes && <span className="text-[#A69E95] italic"> — "{todayCheckIn.notes.slice(0, 40)}{todayCheckIn.notes.length > 40 ? '...' : ''}"</span>}
+              </span>
+            ) : (
+              <span className="text-[11px] text-[#A69E95]">
+                No check-in submitted yet today
+              </span>
+            )}
+            {user.profile?.primaryGoals && user.profile.primaryGoals.length > 0 && (
+              <span className="hidden md:inline text-[11px] text-[#8C847B]">
+                • Goal: {user.profile.primaryGoals[0]}
+              </span>
+            )}
+          </div>
+          <span className="text-[10px] text-[#7A746E] hidden sm:inline">
+            Gemini reflects & recommends based on your check-in & preferences
+          </span>
+        </div>
 
         {/* Save Error Notice */}
         {saveError && (

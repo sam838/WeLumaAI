@@ -3,21 +3,30 @@ import path from "path";
 import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
+import { getGeminiApiKey, getSecretStatus, invalidateSecretCache } from "./src/server/secretManager";
 
 dotenv.config();
 
+// Pre-warm Secret Manager credentials in background on boot
+getGeminiApiKey().catch((err) => {
+  console.info("[Server] Initial Secret Manager warm-up status:", err?.message || String(err));
+});
+
 const PORT = 3000;
 
-// Lazy initialization of GoogleGenAI SDK client
+// Lazy initialization of GoogleGenAI SDK client with Secret Manager integration
 let genAIClient: GoogleGenAI | null = null;
+let currentClientKey: string | null = null;
 
-function getGeminiClient(): GoogleGenAI {
-  const apiKey = process.env.GEMINI_API_KEY;
+async function getGeminiClient(): Promise<GoogleGenAI> {
+  const secretResult = await getGeminiApiKey();
+  const apiKey = secretResult.key;
   if (!apiKey || apiKey.trim() === "" || apiKey === "MY_GEMINI_API_KEY") {
-    throw new Error("GEMINI_API_KEY environment variable is missing or unconfigured. Please configure it in settings.");
+    throw new Error("Gemini API key is missing or unconfigured. Please configure 'Gemini_Api_Key' in Google Secret Manager or set GEMINI_API_KEY.");
   }
-  if (!genAIClient) {
+  if (!genAIClient || currentClientKey !== apiKey) {
     genAIClient = new GoogleGenAI({ apiKey: apiKey.trim() });
+    currentClientKey = apiKey;
   }
   return genAIClient;
 }
@@ -26,17 +35,17 @@ function getGeminiClient(): GoogleGenAI {
 export const AI_TIERS = {
   lite: {
     primary: "gemini-3.1-flash-lite",
-    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.6-flash", "gemini-flash-latest"],
+    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
     maxOutputTokens: 250,
   },
   standard: {
-    primary: "gemini-3.6-flash",
-    fallbackLadder: ["gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-3.7-flash"],
+    primary: "gemini-3.1-flash-lite",
+    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
     maxOutputTokens: 700,
   },
   reasoning: {
-    primary: "gemini-3.7-flash",
-    fallbackLadder: ["gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"],
+    primary: "gemini-3.8-flash",
+    fallbackLadder: ["gemini-3.8-flash", "gemini-3.1-flash-lite"],
     maxOutputTokens: 1600,
   },
 };
@@ -92,7 +101,12 @@ async function generateContentForTier(
       const errMsg = err?.message || String(err);
       const statusCode = err?.status || err?.statusCode || "";
       console.warn(`[Gemini Fallback] Tier '${tierName}' model '${modelName}' failed (${statusCode}): ${errMsg}`);
-      errorsEncountered.push(`${modelName} (${statusCode}): ${errMsg}`);
+      const isPrepaymentExhausted = /prepayment credits are depleted|RESOURCE_EXHAUSTED/i.test(errMsg);
+      if (isPrepaymentExhausted) {
+        errorsEncountered.push(`${modelName}: Prepayment credits depleted for this project.`);
+      } else {
+        errorsEncountered.push(`${modelName} (${statusCode}): ${errMsg}`);
+      }
 
       const isRecoverable =
         /503|429|404|500|UNAVAILABLE|RESOURCE_EXHAUSTED|NOT_FOUND|INTERNAL|fetch failed|rate limit|quota/i.test(
@@ -107,6 +121,13 @@ async function generateContentForTier(
     }
   }
 
+  const hasPrepaymentExhaustion = errorsEncountered.some((e) => /Prepayment credits depleted/i.test(e));
+  if (hasPrepaymentExhaustion) {
+    throw new Error(
+      "Your Google Cloud / AI Studio project's prepayment credits are depleted ($0.00 balance). Please replenish credits at https://ai.studio/projects or provide an active API key from an active project."
+    );
+  }
+
   throw new Error(`All models in tier '${tierName}' ladder failed: ${errorsEncountered.join(" | ")}`);
 }
 
@@ -119,11 +140,16 @@ async function startServer() {
 
   // Health check endpoint
   app.get("/api/health", (_req: Request, res: Response) => {
-    const hasApiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== "MY_GEMINI_API_KEY");
+    const secretInfo = getSecretStatus();
     res.json({
       status: "ok",
       timestamp: new Date().toISOString(),
-      geminiConfigured: hasApiKey,
+      geminiConfigured: secretInfo.configured,
+      secretManager: {
+        source: secretInfo.source,
+        secretPath: secretInfo.secretPath,
+        advice: secretInfo.remediationAdvice,
+      },
       tiers: {
         lite: AI_TIERS.lite.primary,
         standard: AI_TIERS.standard.primary,
@@ -132,18 +158,35 @@ async function startServer() {
     });
   });
 
+  // Secret refresh endpoint to invalidate cache and re-query Secret Manager
+  app.post("/api/secret/refresh", async (_req: Request, res: Response) => {
+    try {
+      invalidateSecretCache();
+      const result = await getGeminiApiKey();
+      res.json({
+        status: "ok",
+        source: result.source,
+        secretPath: result.secretPath,
+        message: "Secret cache invalidated and re-evaluated successfully.",
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message || String(err) });
+    }
+  });
+
   // 2. Gemini Reflection & Journal Processing Endpoint
   // Implements Directive 7: Adaptive Resource Usage (quick, reflect, deep)
   app.post("/api/gemini/reflect", async (req: Request, res: Response) => {
     const payload = req.body && typeof req.body === "object" ? req.body : {};
     const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
-    const style = typeof payload.mode === "string" ? payload.mode : "reflection"; // reflection, summary, brainstorm, chat
+    const style = typeof payload.mode === "string" ? payload.mode : (typeof payload.style === "string" ? payload.style : "reflection"); // reflection, summary, brainstorm, chat
     const depth = (typeof payload.depth === "string" && ["quick", "reflect", "deep"].includes(payload.depth)
       ? payload.depth
       : "reflect") as "quick" | "reflect" | "deep";
-    const history = Array.isArray(payload.history) ? payload.history : [];
-    const entryTitle = typeof payload.title === "string" ? payload.title.trim() : "";
+    const history = Array.isArray(payload.history) ? payload.history : (Array.isArray(payload.recentHistory) ? payload.recentHistory : []);
+    const entryTitle = typeof payload.title === "string" ? payload.title.trim() : (typeof payload.entryTitle === "string" ? payload.entryTitle.trim() : "");
     const userProfile = payload.userProfile && typeof payload.userProfile === "object" ? payload.userProfile : null;
+    const checkIn = payload.checkIn && typeof payload.checkIn === "object" ? payload.checkIn : (userProfile?.latestCheckIn || null);
     const clientNow = typeof payload.clientNow === "string" ? payload.clientNow : new Date().toISOString();
     const clientTimezone = typeof payload.clientTimezone === "string" ? payload.clientTimezone : "UTC";
     const clientLocation = payload.clientLocation && typeof payload.clientLocation === "object" ? payload.clientLocation : null;
@@ -161,7 +204,7 @@ async function startServer() {
     }
 
     try {
-      const ai = getGeminiClient();
+      const ai = await getGeminiClient();
 
       // Calculate readable client date, day of week, and time
       let clientDateObj = new Date(clientNow);
@@ -265,8 +308,33 @@ async function startServer() {
      - If the date is ambiguous or the user asks to schedule something without a date (or just says "Sunday" when they could mean a specific upcoming date), politely ask the user to confirm or specify the exact date in your response (e.g. "I've drafted a session for this coming Sunday, September 6 at 10:00 AM. What date works best for you, or shall we lock in September 6th?").
      - Always explicitly state the calculated date, time, and day of the week in your conversational response so the user has complete clarity.`;
 
+      // Inject Today's Check-In Baseline (CRITICAL)
+      if (checkIn) {
+        systemPrompt += "\n\nTODAY'S RECORDED DAILY CHECK-IN (ACTIVE WELLBEING BASELINE):";
+        systemPrompt += `\n- Recorded Date: ${checkIn.date || isoDateOnly}`;
+        systemPrompt += `\n- Current Mood / Emotional State: ${checkIn.mood || "reflective"}`;
+        systemPrompt += `\n- Physical & Mental Energy Level: ${checkIn.energy || 3} / 5 (${
+          checkIn.energy <= 2
+            ? "Low/Depleted - strictly avoid demanding burdens; prioritize soothing, restorative, low-friction activities"
+            : checkIn.energy >= 4
+            ? "High/Vibrant - receptive to energizing movement, focus, and creativity"
+            : "Moderate/Balanced"
+        })`;
+        systemPrompt += `\n- Stress Level: ${checkIn.stress || 2} / 5 (${
+          checkIn.stress >= 4
+            ? "High/Elevated - prioritize nervous system regulation, gentle reassurance, decompression, and boundary protection"
+            : "Calm/Manageable"
+        })`;
+        if (checkIn.notes) {
+          systemPrompt += `\n- Today's Mindful Intention / Check-In Note: "${checkIn.notes}"`;
+        }
+      } else {
+        systemPrompt += "\n\nTODAY'S CHECK-IN: No specific check-in recorded yet for today (assume balanced baseline mood and moderate energy).";
+      }
+
+      // Inject Comprehensive User Profile & Preferences (CRITICAL)
       if (userProfile) {
-        systemPrompt += "\n\nUser Profile Context (use this to tailor your reflections and metaphors):";
+        systemPrompt += "\n\nUSER PERSONALIZATION & PREFERENCE PROFILE:";
         if (userProfile.name) systemPrompt += `\n- Name: ${userProfile.name}`;
         if (userProfile.religion) systemPrompt += `\n- Religion/Spiritual Path: ${userProfile.religion}`;
         if (userProfile.culturalBeliefs) systemPrompt += `\n- Cultural Beliefs/Philosophies: ${userProfile.culturalBeliefs}`;
@@ -276,12 +344,57 @@ async function startServer() {
           systemPrompt += `\n- Location/Residence: ${loc}`;
         }
         if (Array.isArray(userProfile.primaryGoals) && userProfile.primaryGoals.length > 0) {
-          systemPrompt += `\n- Core Goals: ${userProfile.primaryGoals.join(", ")}`;
+          systemPrompt += `\n- Core Wellbeing Goals: ${userProfile.primaryGoals.join(", ")}`;
         }
         if (Array.isArray(userProfile.groundingActivities) && userProfile.groundingActivities.length > 0) {
-          systemPrompt += `\n- Grounding Activities & Wellness: ${userProfile.groundingActivities.join(", ")}`;
+          systemPrompt += `\n- Preferred Grounding Practices & Favorite Activities: ${userProfile.groundingActivities.join(", ")}`;
+        }
+
+        // Activity Preferences
+        if (userProfile.activityPreferences) {
+          const pref = userProfile.activityPreferences;
+          systemPrompt += "\n- Activity Lifestyle Preferences:";
+          if (Array.isArray(pref.preferredTimes) && pref.preferredTimes.length > 0) {
+            systemPrompt += `\n  * Preferred Times of Day: ${pref.preferredTimes.join(", ")}`;
+          }
+          if (Array.isArray(pref.preferredDays) && pref.preferredDays.length > 0) {
+            systemPrompt += `\n  * Preferred Days: ${pref.preferredDays.join(", ")}`;
+          }
+          if (pref.socialPreference) {
+            systemPrompt += `\n  * Social Setting: ${pref.socialPreference} (${
+              pref.socialPreference === "solo"
+                ? "Prefers solitary personal reflection/movement"
+                : pref.socialPreference === "small_group"
+                ? "Prefers intimate small groups/close friends"
+                : "Open to community gatherings"
+            })`;
+          }
+          if (pref.maxDistanceKm) {
+            systemPrompt += `\n  * Maximum Commute / Distance: ${pref.maxDistanceKm} km`;
+          }
+          if (pref.budgetPreference) {
+            systemPrompt += `\n  * Budget Preference: ${pref.budgetPreference}`;
+          }
+        }
+
+        // Stored Explicit Memories & Preferences
+        if (Array.isArray(userProfile.storedPreferences) && userProfile.storedPreferences.length > 0) {
+          systemPrompt += "\n- Stored Personal Preferences & Memories (User Confirmed):";
+          userProfile.storedPreferences.forEach((item: any) => {
+            if (item && item.label && item.value) {
+              systemPrompt += `\n  * [${item.category?.toUpperCase() || "PREFERENCE"}] ${item.label}: "${item.value}" (${item.confidence || "HIGH"} confidence)`;
+            }
+          });
         }
       }
+
+      // Mandatory Preference & Check-In Grounding Directive
+      systemPrompt +=
+        "\n\nMANDATORY PERSONALIZATION & CHECK-IN GROUNDING DIRECTIVE:" +
+        "\nEvery single answer, cognitive reflection, conversational response, and suggested activity must be deliberately shaped by the user's recorded daily check-in (mood, energy, stress, check-in notes) AND their recorded user preferences (goals, grounding activities, stored preferences, social style, and schedule)." +
+        "\n1. Match Energy & Stress: Acknowledge or gently align with their current emotional state. If their energy is low (1-2) or stress is high (4-5), keep your tone calm, soothing, and supportive. Recommend gentle, low-friction grounding practices (e.g. 5-min breathwork, listening to soothing music, light stretching) rather than demanding workouts or tasks." +
+        "\n2. Respect Interests & Grounding Preferences: When suggesting routines, activities, or reflections, actively draw from what the user explicitly enjoys (e.g. favorite grounding activities, sports, hobbies, or spiritual practices from their profile)." +
+        "\n3. Transparent Relevance: Where relevant, naturally mention why a suggestion fits their current state and preferences (e.g. 'Since you checked in with moderate energy today and prefer outdoor morning moments, a brief walk could restore your focus').";
 
       // Depth tuning
       if (depth === "quick") {
@@ -446,7 +559,7 @@ async function startServer() {
     const clientTimezone = typeof payload.clientTimezone === "string" ? payload.clientTimezone : "UTC";
 
     try {
-      const ai = getGeminiClient();
+      const ai = await getGeminiClient();
 
       // System instruction grounding the recommendation model in wellbeing science & calendar schedule
       const systemInstruction =
@@ -466,7 +579,13 @@ async function startServer() {
         contextText += `Current Condition / State: "${condition}"\n`;
       }
       if (checkIn) {
-        contextText += `Today's Check-In: Mood=${checkIn.mood || "unspecified"}, Energy=${checkIn.energy || 3}/5, Stress=${checkIn.stress || 2}/5\n`;
+        contextText += `Today's Check-In Baseline:\n`;
+        contextText += `- Mood: ${checkIn.mood || "reflective"}\n`;
+        contextText += `- Energy: ${checkIn.energy || 3} / 5 (${checkIn.energy <= 2 ? "Low/Depleted - prioritize soothing, gentle, low-friction activities" : checkIn.energy >= 4 ? "High/Vibrant - receptive to energizing movement" : "Moderate/Balanced"})\n`;
+        contextText += `- Stress: ${checkIn.stress || 2} / 5 (${checkIn.stress >= 4 ? "High/Elevated - prioritize calming nervous system regulation" : "Calm/Manageable"})\n`;
+        if (checkIn.notes) {
+          contextText += `- Today's Check-In Mindful Note: "${checkIn.notes}"\n`;
+        }
       }
       if (clientLocation || clientTimezone) {
         contextText += `User Location & Timezone: ${
@@ -491,7 +610,16 @@ async function startServer() {
           const pref = userProfile.activityPreferences;
           if (pref.preferredTimes) contextText += `- Preferred Times: ${pref.preferredTimes.join(", ")}\n`;
           if (pref.socialPreference) contextText += `- Social Setting: ${pref.socialPreference}\n`;
+          if (pref.maxDistanceKm) contextText += `- Maximum Distance: ${pref.maxDistanceKm} km\n`;
           if (pref.budgetPreference) contextText += `- Budget: ${pref.budgetPreference}\n`;
+        }
+        if (Array.isArray(userProfile.storedPreferences) && userProfile.storedPreferences.length > 0) {
+          contextText += `- Stored Preferences & Memories:\n`;
+          userProfile.storedPreferences.forEach((item: any) => {
+            if (item && item.label && item.value) {
+              contextText += `  * [${item.category?.toUpperCase() || "PREFERENCE"}] ${item.label}: "${item.value}"\n`;
+            }
+          });
         }
       }
 
@@ -506,10 +634,12 @@ async function startServer() {
         contextText += `\nCalendar Schedule: No calendar events logged or disconnected (Local fallback schedule assumed).\n`;
       }
 
-      contextText += `\n\nGenerate 3-4 diverse wellbeing activities (Mind, Body, Nature/Creativity, or Connection/Rest) tailored specifically to balance their schedule and condition.`;
+      contextText += `\n\nCRITICAL GROUNDING DIRECTIVE:
+Generate 3-4 diverse wellbeing activities (Mind, Body, Nature/Creativity, or Connection/Rest) that are STRICTLY grounded in their check-in (mood, energy, stress) and preferences (grounding practices, goals, preferred times, social setting, stored preferences).
+In each recommendation's 'reason' field, explicitly explain how that specific activity honors their daily check-in (e.g. 'Fits your current ${checkIn?.energy ?? 3}/5 energy') and personal preferences (e.g. 'Aligns with your preference for ${userProfile?.groundingActivities?.[0] || "mindful grounding"}').`;
       contextText += `\n\nOutput JSON Schema:
 {
-  "summaryReasoning": "1-2 sentences explaining how these activities fit their weekly calendar pace and condition",
+  "summaryReasoning": "1-2 sentences explaining how these activities fit their weekly calendar pace, current check-in, and personal preferences",
   "recommendations": [
     {
       "id": "rec_1",
@@ -517,7 +647,7 @@ async function startServer() {
       "domain": "mind|body|life|connection",
       "category": "Mindfulness|Movement|Nature|Creativity|Connection|Rest",
       "description": "2-3 sentences explaining what to do and how to do it comfortably.",
-      "reason": "Explicit personalized explanation of why this fits their current calendar load and prompt/condition.",
+      "reason": "Explicit personalized explanation of why this fits their current check-in energy/stress and personal preferences.",
       "energyRequired": "low|medium|high",
       "durationMinutes": 15,
       "tags": ["Tag1", "Tag2"],
@@ -585,6 +715,99 @@ async function startServer() {
       console.error("[Gemini Recommend Activities Error]:", error);
       return res.status(500).json({
         error: error?.message || "Failed to generate AI activity recommendations.",
+      });
+    }
+  });
+
+  // 2c. Ask My Journal Grounded Inquiry Endpoint (Directive 22)
+  app.post("/api/gemini/inquire", async (req: Request, res: Response) => {
+    const payload = req.body && typeof req.body === "object" ? req.body : {};
+    const query = typeof payload.query === "string" ? payload.query.trim() : "";
+    const journalHistory = Array.isArray(payload.journalHistory) ? payload.journalHistory : [];
+    const checkIn = payload.checkIn && typeof payload.checkIn === "object" ? payload.checkIn : null;
+    const userProfile = payload.userProfile && typeof payload.userProfile === "object" ? payload.userProfile : null;
+    const clientTimezone = typeof payload.clientTimezone === "string" ? payload.clientTimezone : "UTC";
+
+    if (!query) {
+      return res.status(400).json({ error: "Query parameter is required." });
+    }
+
+    try {
+      const ai = await getGeminiClient();
+
+      let systemInstruction =
+        "You are an empathetic, grounded Wellbeing Journal Analyst and Personal Insight Companion conforming strictly to Directive 22 (Ask My Journal). " +
+        "Your task is to answer the user's reflective inquiry based STRICTLY on their authentic journal entries, today's daily check-in, and recorded user preferences. " +
+        "Never hallucinate journal events or invent memories. If the user's journal history does not contain enough information to answer definitively, state so transparently while offering gentle encouragement.";
+
+      let contextPrompt = `USER INQUIRY: "${query}"\n\n`;
+
+      if (checkIn) {
+        contextPrompt += `TODAY'S CHECK-IN:\n`;
+        contextPrompt += `- Date: ${checkIn.date || "Today"}\n`;
+        contextPrompt += `- Current Mood: ${checkIn.mood || "reflective"}\n`;
+        contextPrompt += `- Energy Level: ${checkIn.energy || 3} / 5\n`;
+        contextPrompt += `- Stress Level: ${checkIn.stress || 2} / 5\n`;
+        if (checkIn.notes) {
+          contextPrompt += `- Check-In Note: "${checkIn.notes}"\n`;
+        }
+        contextPrompt += "\n";
+      }
+
+      if (userProfile) {
+        contextPrompt += `USER PROFILE & CONFIRMED PREFERENCES:\n`;
+        if (userProfile.name) contextPrompt += `- Name: ${userProfile.name}\n`;
+        if (userProfile.primaryGoals?.length) contextPrompt += `- Goals: ${userProfile.primaryGoals.join(", ")}\n`;
+        if (userProfile.groundingActivities?.length) contextPrompt += `- Grounding Practices: ${userProfile.groundingActivities.join(", ")}\n`;
+        if (Array.isArray(userProfile.storedPreferences) && userProfile.storedPreferences.length > 0) {
+          contextPrompt += `- Stored Preferences:\n`;
+          userProfile.storedPreferences.forEach((item: any) => {
+            if (item && item.label && item.value) {
+              contextPrompt += `  * ${item.label}: "${item.value}"\n`;
+            }
+          });
+        }
+        contextPrompt += "\n";
+      }
+
+      contextPrompt += `RETRIEVED JOURNAL HISTORY (${journalHistory.length} entries available):\n`;
+      if (journalHistory.length === 0) {
+        contextPrompt += `(No past journal reflections logged yet).\n`;
+      } else {
+        journalHistory.slice(0, 20).forEach((entry: any, index: number) => {
+          const dateStr = entry.createdAt ? new Date(entry.createdAt).toLocaleDateString("en-US", { timeZone: clientTimezone }) : "Recent";
+          const title = entry.title || "Untitled Reflection";
+          const mood = entry.mood || "reflective";
+          const summary = entry.summary || entry.rawText || (entry.messages?.[0]?.text || "");
+          contextPrompt += `${index + 1}. [${dateStr}] "${title}" (Mood: ${mood}, Energy: ${entry.energy || 3}/5, Stress: ${entry.stress || 2}/5)\n`;
+          if (summary) {
+            contextPrompt += `   Summary/Excerpt: ${String(summary).slice(0, 300)}\n`;
+          }
+          if (entry.themes?.length) {
+            contextPrompt += `   Themes: ${entry.themes.join(", ")}\n`;
+          }
+        });
+      }
+
+      contextPrompt += `\nSynthesize a warm, grounded response (2-3 paragraphs) answering the user's inquiry directly based on their entries, check-in, and preferences. Highlight key patterns, cite specific entry titles/dates where helpful, and offer an empowering mindful perspective.`;
+
+      const result = await generateContentForTier(ai, "standard", {
+        contents: contextPrompt,
+        systemInstruction,
+        maxOutputTokens: 800,
+      });
+
+      return res.json({
+        answer: result.text,
+        modelUsed: result.modelUsed,
+        fallbackUsed: result.fallbackUsed,
+        entriesReferenced: journalHistory.length,
+        timestamp: Date.now(),
+      });
+    } catch (err: any) {
+      console.error("[Ask My Journal Inquiry Error]:", err);
+      return res.status(500).json({
+        error: err?.message || "Failed to process journal inquiry.",
       });
     }
   });

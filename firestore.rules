@@ -45,6 +45,13 @@ service cloud.firestore {
         allow create, update: if isOwner(userId) && isValidId(activityId);
         allow delete: if isOwner(userId) && isValidId(activityId);
       }
+
+      // User-isolated Daily Check-Ins
+      match /checkins/{checkInId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(checkInId);
+        allow delete: if isOwner(userId) && isValidId(checkInId);
+      }
     }
   }
 }

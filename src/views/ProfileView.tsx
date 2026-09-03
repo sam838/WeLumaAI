@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   User,
   Sparkles,
@@ -13,6 +13,8 @@ import {
   Clock,
   Layers,
   FileJson,
+  Key,
+  RefreshCw,
 } from "lucide-react";
 import {
   AuthUserState,
@@ -26,6 +28,7 @@ interface ProfileViewProps {
   onUpdateUser: (updatedUser: AuthUserState) => void;
   onSignOut: () => void;
   onDeletePreferenceItem?: (id: string) => void;
+  onAddPreferenceItem?: (item: StoredPreferenceItem) => void;
 }
 
 const GOAL_OPTIONS = [
@@ -57,6 +60,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onUpdateUser,
   onSignOut,
   onDeletePreferenceItem,
+  onAddPreferenceItem,
 }) => {
   const [activeTab, setActiveTab] = useState<"details" | "preferences" | "memories" | "privacy">("details");
 
@@ -83,9 +87,56 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
     user.profile?.activityPreferences?.budgetPreference || "flexible"
   );
 
+  // New Custom Preference Form State
+  const [newPrefCategory, setNewPrefCategory] = useState<string>("interest");
+  const [newPrefLabel, setNewPrefLabel] = useState<string>("");
+  const [newPrefValue, setNewPrefValue] = useState<string>("");
+
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Secret Manager runtime status
+  const [secretStatus, setSecretStatus] = useState<{
+    configured?: boolean;
+    source?: "secret_manager" | "env_var" | "none";
+    secretPath?: string;
+    advice?: string;
+  } | null>(null);
+  const [isRefreshingSecret, setIsRefreshingSecret] = useState(false);
+
+  const fetchSecretStatus = async () => {
+    try {
+      const res = await fetch("/api/health");
+      if (res.ok) {
+        const data = await res.json();
+        setSecretStatus({
+          configured: data.geminiConfigured,
+          source: data.secretManager?.source,
+          secretPath: data.secretManager?.secretPath,
+          advice: data.secretManager?.advice,
+        });
+      }
+    } catch {
+      // quiet
+    }
+  };
+
+  useEffect(() => {
+    fetchSecretStatus();
+  }, []);
+
+  const handleRefreshSecret = async () => {
+    setIsRefreshingSecret(true);
+    try {
+      await fetch("/api/secret/refresh", { method: "POST" });
+      await fetchSecretStatus();
+    } catch {
+      // quiet
+    } finally {
+      setIsRefreshingSecret(false);
+    }
+  };
 
   const toggleSelection = (
     item: string,
@@ -119,6 +170,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         budgetPreference,
       },
       storedPreferences: user.profile?.storedPreferences,
+      latestCheckIn: user.profile?.latestCheckIn,
       onboardingCompleted: true,
       createdAt: user.profile?.createdAt || Date.now(),
       updatedAt: Date.now(),
@@ -174,7 +226,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 {user.displayName || "Wellbeing Member"}
               </h1>
               <p className="text-xs text-[#B7AFA7]">
-                {user.isAnonymous ? "Guest Sandbox Session" : user.email || "Private Account"}
+                {user.email || "Google Account"}
               </p>
             </div>
           </div>
@@ -434,9 +486,100 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 <div className="p-3 rounded-2xl bg-[#171513] border border-[#38322D] text-xs text-[#B7AFA7] flex items-start space-x-2">
                   <Shield className="w-4 h-4 text-[#6E9A7B] shrink-0 mt-0.5" />
                   <span>
-                    No False Memory: AI inferences (LOW confidence) are never promoted to facts without user confirmation. You can remove any item at any time.
+                    No False Memory: AI inferences (LOW confidence) are never promoted to facts without user confirmation. Gemini actively grounds reflections, recommendations, and journal answers on these confirmed preferences.
                   </span>
                 </div>
+
+                {/* Add New Preference Item */}
+                {onAddPreferenceItem && (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!newPrefLabel.trim() || !newPrefValue.trim()) return;
+                      const item: StoredPreferenceItem = {
+                        id: `pref_${Date.now()}`,
+                        category: newPrefCategory as any,
+                        label: newPrefLabel.trim(),
+                        value: newPrefValue.trim(),
+                        confidence: "HIGH",
+                        source: "explicit_user",
+                        createdAt: Date.now(),
+                        updatedAt: Date.now(),
+                      };
+                      onAddPreferenceItem(item);
+                      setNewPrefLabel("");
+                      setNewPrefValue("");
+                    }}
+                    className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-[#F3EFE8] flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-[#C89B3C]" />
+                        Add Explicit Preference / Memory
+                      </span>
+                      <span className="text-[10px] text-[#C89B3C] font-mono">
+                        HIGH Confidence (Explicit)
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[11px] text-[#B7AFA7] mb-1">Category</label>
+                        <select
+                          id="select-pref-category"
+                          value={newPrefCategory}
+                          onChange={(e) => setNewPrefCategory(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-[#211E1B] border border-[#38322D] rounded-xl text-xs text-[#F3EFE8] outline-none"
+                        >
+                          <option value="interest">Interest / Passion</option>
+                          <option value="grounding">Grounding / Activity</option>
+                          <option value="schedule">Schedule / Window</option>
+                          <option value="social">Social Preference</option>
+                          <option value="distance">Distance / Location</option>
+                          <option value="pattern">Routine Pattern</option>
+                        </select>
+                      </div>
+
+                      <div className="sm:col-span-2">
+                        <label className="block text-[11px] text-[#B7AFA7] mb-1">Label</label>
+                        <input
+                          id="input-pref-label"
+                          type="text"
+                          placeholder="e.g., Favorite Sport, Morning Window, Sleep Habit"
+                          value={newPrefLabel}
+                          onChange={(e) => setNewPrefLabel(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-[#211E1B] border border-[#38322D] rounded-xl text-xs text-[#F3EFE8] outline-none placeholder-[#7A746E]"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-[#B7AFA7] mb-1">Preference Details / Value</label>
+                      <input
+                        id="input-pref-value"
+                        type="text"
+                        placeholder="e.g., I love playing badminton every Sunday morning; keep routines under 30 mins"
+                        value={newPrefValue}
+                        onChange={(e) => setNewPrefValue(e.target.value)}
+                        className="w-full px-3 py-1.5 bg-[#211E1B] border border-[#38322D] rounded-xl text-xs text-[#F3EFE8] outline-none placeholder-[#7A746E]"
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between pt-1">
+                      <p className="text-[10px] text-[#7A746E]">
+                        Gemini references this memory for all personalized advice, reflections, and routine recommendations.
+                      </p>
+                      <button
+                        id="btn-add-preference"
+                        type="submit"
+                        disabled={!newPrefLabel.trim() || !newPrefValue.trim()}
+                        className="px-3.5 py-1.5 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] disabled:opacity-40 disabled:cursor-not-allowed text-[#171513] text-xs font-semibold transition-colors cursor-pointer"
+                      >
+                        Save Preference
+                      </button>
+                    </div>
+                  </form>
+                )}
 
                 <div className="space-y-2">
                   {user.profile?.storedPreferences && user.profile.storedPreferences.length > 0 ? (
@@ -495,6 +638,58 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                   <p className="leading-relaxed">
                     All journal reflections, routine definitions, and personalization settings are locked to path <code className="text-[#C89B3C]">/users/{user.uid}/*</code> and cannot be accessed by other users.
                   </p>
+                </div>
+
+                {/* Google Secret Manager Status */}
+                <div className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div className="flex items-center space-x-2">
+                      <Key className="w-4 h-4 text-[#C89B3C]" />
+                      <h3 className="font-semibold text-[#F3EFE8]">
+                        Google Secret Manager Integration
+                      </h3>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span
+                        className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                          secretStatus?.source === "secret_manager"
+                            ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+                            : secretStatus?.source === "env_var"
+                            ? "bg-amber-950/60 border-amber-800 text-amber-300"
+                            : "bg-rose-950/60 border-rose-800 text-rose-300"
+                        }`}
+                      >
+                        {secretStatus?.source === "secret_manager"
+                          ? "Secret Manager (Active)"
+                          : secretStatus?.source === "env_var"
+                          ? "Environment Variable Fallback"
+                          : "Unconfigured"}
+                      </span>
+                      <button
+                        id="btn-refresh-secret-status"
+                        type="button"
+                        onClick={handleRefreshSecret}
+                        disabled={isRefreshingSecret}
+                        className="p-1 text-[#B7AFA7] hover:text-[#F3EFE8] rounded-lg hover:bg-[#211E1B] transition-colors cursor-pointer"
+                        title="Re-query Secret Manager"
+                      >
+                        <RefreshCw
+                          className={`w-3.5 h-3.5 ${
+                            isRefreshingSecret ? "animate-spin text-[#C89B3C]" : ""
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-[#B7AFA7]">
+                    {secretStatus?.advice ||
+                      "The backend dynamically polls Google Cloud Secret Manager for 'Gemini_Api_Key' and 'GEMINI_API_KEY' with secure in-memory caching and automatic fallback."}
+                  </p>
+                  {secretStatus?.secretPath && (
+                    <div className="text-[10px] font-mono text-[#7A746E] truncate">
+                      Source: {secretStatus.secretPath}
+                    </div>
+                  )}
                 </div>
 
                 <div className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">

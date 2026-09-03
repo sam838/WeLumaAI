@@ -92,6 +92,7 @@ export interface StoredPreferenceItem {
   source: "explicit_user" | "observed_pattern" | "ai_hypothesis";
   confirmedAt?: number;
   createdAt: number;
+  updatedAt?: number;
 }
 
 export interface LocationTimezoneInfo {
@@ -131,6 +132,7 @@ export interface UserProfile {
     budgetPreference?: "free" | "low" | "moderate" | "flexible";
   };
   storedPreferences?: StoredPreferenceItem[];
+  latestCheckIn?: DailyCheckInState;
   onboardingCompleted: boolean;
   createdAt: number;
   updatedAt: number;

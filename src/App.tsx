@@ -17,8 +17,6 @@ import {
 import {
   subscribeAuthState,
   signInWithGoogle,
-  signInGuest,
-  createSandboxUser,
   signOutUser,
   subscribeUserInteractions,
   saveInteractionToFirestore,
@@ -31,6 +29,8 @@ import {
   getTodayDateString,
   getLocalCheckIn,
   saveLocalCheckIn,
+  saveCheckInToFirestore,
+  getCheckInFromFirestore,
   saveUserProfile,
 } from "./firebase";
 import {
@@ -84,10 +84,21 @@ export default function App() {
       setCurrentUser(user);
       setAuthLoading(false);
       if (user) {
-        // Load today's check-in
+        // Load today's check-in: local storage for immediate render, then verify with Firestore
         const today = getTodayDateString();
         const savedCheckIn = getLocalCheckIn(user.uid, today);
         if (savedCheckIn) setTodayCheckIn(savedCheckIn);
+
+        getCheckInFromFirestore(user.uid, today)
+          .then((remoteCheckIn) => {
+            if (remoteCheckIn) {
+              setTodayCheckIn(remoteCheckIn);
+              saveLocalCheckIn(user.uid, remoteCheckIn);
+            }
+          })
+          .catch((err) => {
+            console.warn("Notice checking cloud check-in:", err);
+          });
       }
     });
     return () => unsubscribe();
@@ -174,21 +185,6 @@ export default function App() {
     } catch (err: any) {
       setAuthError(err.message || "Failed to sign in with Google.");
     }
-  };
-
-  const handleSignInGuest = async () => {
-    setAuthError(null);
-    try {
-      await signInGuest();
-    } catch (err: any) {
-      setAuthError(err.message || "Failed to enter as guest.");
-    }
-  };
-
-  const handleStartSandbox = () => {
-    setAuthError(null);
-    const sandboxUser = createSandboxUser();
-    setCurrentUser(sandboxUser);
   };
 
   const handleSignOut = async () => {
@@ -280,6 +276,7 @@ export default function App() {
               text: m.text,
             })),
             userProfile: currentUser.profile,
+            checkIn: todayCheckIn || currentUser.profile?.latestCheckIn || null,
             clientNow: new Date().toISOString(),
             clientTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
           }),
@@ -454,14 +451,28 @@ export default function App() {
     [currentUser?.uid]
   );
 
-  // G. Check-In Handler
+  // G. Check-In Handler (Local cache + Firestore persistent sync)
   const handleSaveCheckIn = useCallback(
-    (checkIn: DailyCheckInState) => {
+    async (checkIn: DailyCheckInState) => {
       if (!currentUser?.uid) return;
       setTodayCheckIn(checkIn);
       saveLocalCheckIn(currentUser.uid, checkIn);
+      try {
+        await saveCheckInToFirestore(currentUser.uid, checkIn);
+        if (currentUser.profile) {
+          const updatedProfile: UserProfile = {
+            ...currentUser.profile,
+            latestCheckIn: checkIn,
+            updatedAt: Date.now(),
+          };
+          await saveUserProfile(currentUser.uid, updatedProfile);
+          setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
+        }
+      } catch (err: any) {
+        console.warn("Notice saving check-in to Firestore:", err);
+      }
     },
-    [currentUser?.uid]
+    [currentUser]
   );
 
   // H. Quick Journal routing from Home / Today
@@ -472,7 +483,20 @@ export default function App() {
     setActiveTab("journal");
   };
 
-  // I. Stored Preference Deletion
+  // I. Stored Preference Add & Delete
+  const handleAddPreferenceItem = async (newItem: StoredPreferenceItem) => {
+    if (!currentUser?.uid || !currentUser.profile) return;
+    const currentList = currentUser.profile.storedPreferences || [];
+    const updatedList = [...currentList, newItem];
+    const updatedProfile: UserProfile = {
+      ...currentUser.profile,
+      storedPreferences: updatedList,
+      updatedAt: Date.now(),
+    };
+    await saveUserProfile(currentUser.uid, updatedProfile);
+    setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
+  };
+
   const handleDeletePreferenceItem = async (itemId: string) => {
     if (!currentUser?.uid || !currentUser.profile) return;
     const currentList = currentUser.profile.storedPreferences || [];
@@ -483,10 +507,7 @@ export default function App() {
       updatedAt: Date.now(),
     };
     await saveUserProfile(currentUser.uid, updatedProfile);
-    setCurrentUser({
-      ...currentUser,
-      profile: updatedProfile,
-    });
+    setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
   };
 
   // 1. Initial Loading Screen
@@ -506,8 +527,6 @@ export default function App() {
     return (
       <LandingView
         onSignInGoogle={handleSignInGoogle}
-        onSignInGuest={handleSignInGuest}
-        onStartSandbox={handleStartSandbox}
         loading={authLoading}
         errorMessage={authError}
         onClearError={() => setAuthError(null)}
@@ -571,6 +590,7 @@ export default function App() {
         {activeTab === "journal" && (
           <JournalView
             user={currentUser}
+            todayCheckIn={todayCheckIn}
             interactions={interactions}
             activeInteractionId={activeInteractionId}
             onSelectInteraction={(id) => {
@@ -642,6 +662,7 @@ export default function App() {
             onUpdateUser={setCurrentUser}
             onSignOut={handleSignOut}
             onDeletePreferenceItem={handleDeletePreferenceItem}
+            onAddPreferenceItem={handleAddPreferenceItem}
           />
         )}
       </main>

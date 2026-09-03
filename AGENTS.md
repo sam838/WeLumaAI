@@ -25,7 +25,9 @@
   * **User Data Isolation**: Support owner-bound path checking (`request.auth.uid == userId`) for personal documents.
   * **Role-Based Access Control (RBAC)**: Use custom claims or dynamic document lookups (`get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role`) for elevated administrative operations.
   * **Auth State Integrity**: Verify JWT tokens on backend server environments (e.g., Cloud Functions or Cloud Run) using the Firebase Admin SDK.
-  * **Passwordless/Federated Auth**: Do not implement email/password login forms that require handling or storing passwords in the application custom code. Prefer Federated Identity (e.g., Google Sign-In via Firebase Auth) to outsource credential management securely.
+  * **Exclusive Google Account Authentication**: Guest login, anonymous sessions, and instant mock/sandbox logins are strictly prohibited and removed. The application only authenticates users via their verified Google account using Firebase Authentication (`signInWithPopup` with `GoogleAuthProvider`).
+  * **Passwordless/Federated Auth**: Do not implement email/password login forms that require handling or storing passwords in the application custom code. Federated Google Sign-In via Firebase Auth outsources credential management securely.
+  * **Session Sanitation**: Non-authenticated or anonymous users must never access private journal entries, stored preferences, or routines. Any anonymous session tokens found in local storage must be invalidated immediately.
 
 ## 4. Secret Management & Zero-Hardcoding Hygiene
 * **Objective**: Eliminate hardcoded credentials, API keys, service account JSON files, and tokens across runtime, local workspace, and version control exports.
@@ -757,6 +759,8 @@
 
 ## 43. Required Functional Walkthrough Coverage
 * In addition to the existing testing directives, cover every implemented path including where applicable:
+  * Google Account Sign-In (success, popup blocked, popup closed, unauthorized domain notice).
+  * Session Sign-Out and credential state cleanup.
   * Create/edit/delete journal entry.
   * Retry failed save.
   * Quick / Reflect / Deep.
