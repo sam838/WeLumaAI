@@ -15,6 +15,8 @@ import {
   FileJson,
   Key,
   RefreshCw,
+  Sun,
+  Moon,
 } from "lucide-react";
 import {
   AuthUserState,
@@ -22,6 +24,7 @@ import {
   UserProfile,
 } from "../types";
 import { updateUserProfileAndAccount } from "../firebase";
+import { useTheme } from "../context/ThemeContext";
 
 interface ProfileViewProps {
   user: AuthUserState;
@@ -62,6 +65,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   onDeletePreferenceItem,
   onAddPreferenceItem,
 }) => {
+  const { theme, setTheme, isDark } = useTheme();
   const [activeTab, setActiveTab] = useState<"details" | "preferences" | "memories" | "privacy">("details");
 
   // Form State
@@ -378,6 +382,48 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
               <h2 className="text-sm font-bold text-[#F3EFE8] font-serif border-b border-[#38322D] pb-2">
                 Wellbeing Intentions & Activity Preferences
               </h2>
+
+              {/* Theme Mode & Appearance Card */}
+              <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-center space-x-3">
+                  <div className="w-10 h-10 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shrink-0">
+                    {isDark ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-semibold text-[#F3EFE8]">Appearance Theme</h3>
+                    <p className="text-xs text-[#B7AFA7]">
+                      Toggle between calm Dark Mode and radiant Light Mode
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 w-full sm:w-auto">
+                  <button
+                    type="button"
+                    onClick={() => setTheme("dark")}
+                    className={`flex-1 sm:flex-none flex items-center justify-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-medium border transition-all cursor-pointer ${
+                      isDark
+                        ? "bg-[#C89B3C] text-[#171513] border-[#C89B3C] font-semibold shadow-xs"
+                        : "bg-[#211E1B] text-[#B7AFA7] border-[#38322D] hover:text-[#F3EFE8]"
+                    }`}
+                  >
+                    <Moon className="w-3.5 h-3.5" />
+                    <span>Dark Mode</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTheme("light")}
+                    className={`flex-1 sm:flex-none flex items-center justify-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-medium border transition-all cursor-pointer ${
+                      !isDark
+                        ? "bg-[#C89B3C] text-[#171513] border-[#C89B3C] font-semibold shadow-xs"
+                        : "bg-[#211E1B] text-[#B7AFA7] border-[#38322D] hover:text-[#F3EFE8]"
+                    }`}
+                  >
+                    <Sun className="w-3.5 h-3.5" />
+                    <span>Light Mode</span>
+                  </button>
+                </div>
+              </div>
 
               {/* Goals */}
               <div className="space-y-2">

@@ -9,7 +9,10 @@ import {
   BookOpen,
   CalendarCheck,
   Compass,
+  Sun,
+  Moon,
 } from "lucide-react";
+import { useTheme } from "../context/ThemeContext";
 
 interface LandingViewProps {
   onSignInGoogle: () => Promise<void>;
@@ -24,6 +27,7 @@ export const LandingView: React.FC<LandingViewProps> = ({
   errorMessage,
   onClearError,
 }) => {
+  const { theme, toggleTheme, isDark } = useTheme();
   const [isSigningIn, setIsSigningIn] = useState<boolean>(false);
 
   const handleGoogleClick = async () => {
@@ -50,9 +54,20 @@ export const LandingView: React.FC<LandingViewProps> = ({
               </span>
             </div>
           </div>
-          <div className="flex items-center space-x-2 text-xs text-[#B7AFA7]">
-            <Shield className="w-3.5 h-3.5 text-[#6E9A7B]" />
-            <span className="hidden sm:inline">Owner-Bound Firestore Isolation</span>
+          <div className="flex items-center space-x-3 text-xs text-[#B7AFA7]">
+            <button
+              onClick={toggleTheme}
+              className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl border border-[#38322D] hover:border-[#C89B3C]/50 bg-[#171513] hover:bg-[#2c2723] text-xs transition-all cursor-pointer text-[#C89B3C]"
+              title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              aria-label={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {isDark ? <Sun className="w-4 h-4 text-[#C89B3C]" /> : <Moon className="w-4 h-4 text-[#B68428]" />}
+              <span className="font-medium text-[#F3EFE8]">{isDark ? "Light" : "Dark"}</span>
+            </button>
+            <div className="hidden sm:flex items-center space-x-1.5">
+              <Shield className="w-3.5 h-3.5 text-[#6E9A7B]" />
+              <span>Owner-Bound Firestore Isolation</span>
+            </div>
           </div>
         </div>
       </header>

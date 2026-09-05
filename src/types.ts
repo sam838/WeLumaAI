@@ -35,6 +35,23 @@ export interface UsageMetadata {
   fallbackUsed?: boolean;
 }
 
+export interface RecommendedPlace {
+  id: string; // Google Place ID
+  name: string;
+  formattedAddress: string;
+  address?: string;
+  distanceKm?: number;
+  distanceFormatted?: string; // e.g. "1.2 km away"
+  rating?: number;
+  userRatingCount?: number;
+  userRatingsTotal?: number;
+  latitude?: number;
+  longitude?: number;
+  googleMapsUri?: string;
+  googleMapsUrl?: string;
+  openNow?: boolean;
+}
+
 export interface SuggestedActivityItem {
   id?: string;
   title: string;
@@ -48,6 +65,11 @@ export interface SuggestedActivityItem {
   targetDateTimeISO?: string;
   needsDateClarification?: boolean;
   scheduledEventId?: string;
+  // Google Maps & Places Integration
+  venueQuery?: string; // e.g. "swimming pool", "badminton court"
+  recommendedPlaces?: RecommendedPlace[];
+  selectedPlace?: RecommendedPlace;
+  locationQueryUsed?: string;
 }
 
 export interface JournalMessage {
@@ -55,6 +77,8 @@ export interface JournalMessage {
   role: "user" | "model";
   text: string;
   timestamp: number;
+  modelUsed?: string;
+  depth?: ReflectionDepth;
   suggestedActivities?: SuggestedActivityItem[];
 }
 
@@ -133,6 +157,7 @@ export interface UserProfile {
   };
   storedPreferences?: StoredPreferenceItem[];
   latestCheckIn?: DailyCheckInState;
+  dailyReminder?: CheckInReminderSetting;
   onboardingCompleted: boolean;
   createdAt: number;
   updatedAt: number;
@@ -228,11 +253,33 @@ export interface GoogleCalendarEvent {
 export interface CalendarReminderInput {
   title: string;
   description?: string;
+  location?: string;
   startTime: string; // ISO string
   endTime: string; // ISO string
   isAllDay?: boolean;
   isReminderTask?: boolean;
   colorId?: string;
+  recurrence?: string[]; // e.g. ["RRULE:FREQ=DAILY"]
+}
+
+export interface CheckInReminderSetting {
+  enabled: boolean;
+  time: string; // "20:00" (HH:mm)
+  label?: string; // "Daily Mindful Check-in & Journaling"
+  notifyBrowser: boolean;
+  syncGoogleCalendar: boolean;
+  googleCalendarEventId?: string;
+  lastNotifiedDate?: string; // "YYYY-MM-DD"
+  updatedAt?: number;
+}
+
+export interface CheckInStats {
+  currentStreak: number;
+  longestStreak: number;
+  thisMonthCount: number;
+  totalCheckIns: number;
+  monthName: string;
+  checkedInToday: boolean;
 }
 
 export interface CalendarSyncState {

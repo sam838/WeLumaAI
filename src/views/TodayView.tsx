@@ -120,7 +120,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
     <div className="flex-1 overflow-y-auto bg-[#171513] text-[#F3EFE8] p-4 sm:p-6 lg:p-8">
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Top Mindful Welcome Banner */}
-        <div className="p-6 sm:p-8 rounded-3xl bg-gradient-to-r from-[#211E1B] via-[#24201D] to-[#211E1B] border border-[#38322D] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
+        <div className="p-6 sm:p-8 rounded-3xl bg-[#211E1B] border border-[#38322D] flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-xl">
           <div className="space-y-1">
             <div className="flex items-center space-x-2 text-xs font-semibold text-[#C89B3C] uppercase tracking-wider">
               <Sun className="w-4 h-4" />
@@ -273,7 +273,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
                 </div>
 
                 {/* AI Grounding Context Badge */}
-                <div className="p-3 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-3 text-xs">
+                <div className="p-3 rounded-2xl bg-[#171513] border border-[#38322D] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
                   <div className="flex items-center space-x-2 text-[11px] text-[#C89B3C]">
                     <Sparkles className="w-3.5 h-3.5 shrink-0" />
                     <span>Gemini uses this check-in & your stored preferences across all journal reflections, answers, and activity recommendations.</span>
@@ -281,7 +281,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   <button
                     id="btn-save-checkin"
                     type="submit"
-                    className="flex items-center space-x-1.5 px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] text-xs font-semibold transition-colors shrink-0 shadow-sm cursor-pointer"
+                    className="w-full sm:w-auto flex items-center justify-center space-x-1.5 px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] text-xs font-semibold transition-colors shrink-0 shadow-sm cursor-pointer"
                   >
                     <Check className="w-3.5 h-3.5" />
                     <span>Record Check-In</span>

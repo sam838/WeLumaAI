@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   AuthUserState,
+  CheckInReminderSetting,
   DailyCheckInState,
   JournalInteraction,
   JournalMessage,
@@ -31,6 +32,7 @@ import {
   saveLocalCheckIn,
   saveCheckInToFirestore,
   getCheckInFromFirestore,
+  subscribeUserCheckIns,
   saveUserProfile,
 } from "./firebase";
 import {
@@ -49,6 +51,7 @@ import { ActivitiesView } from "./views/ActivitiesView";
 import { PlannerView } from "./views/PlannerView";
 import { ProfileView } from "./views/ProfileView";
 import { CalendarModal } from "./components/CalendarModal";
+import { DailyReminderModal } from "./components/DailyReminderModal";
 
 export default function App() {
   // 1. Core State
@@ -58,6 +61,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<NavigationTab>("today");
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
   const [calendarModalOpen, setCalendarModalOpen] = useState<boolean>(false);
+  const [reminderModalOpen, setReminderModalOpen] = useState<boolean>(false);
+  const [reminderToast, setReminderToast] = useState<{ message: string; type: "success" | "info" } | null>(null);
 
   // 2. Data State
   const [interactions, setInteractions] = useState<JournalInteraction[]>([]);
@@ -65,6 +70,7 @@ export default function App() {
   const [routines, setRoutines] = useState<WellbeingRoutine[]>([]);
   const [activities, setActivities] = useState<WellbeingActivity[]>(DEFAULT_WELLBEING_ACTIVITIES);
   const [todayCheckIn, setTodayCheckIn] = useState<DailyCheckInState | null>(null);
+  const [checkInsMap, setCheckInsMap] = useState<Record<string, DailyCheckInState>>({});
 
   // Quick jump draft buffer
   const [quickDraftText, setQuickDraftText] = useState<string>("");
@@ -159,10 +165,20 @@ export default function App() {
       }
     });
 
+    // 4. Subscribe to Check-Ins Map across all dates
+    const unsubCheckIns = subscribeUserCheckIns(userId, (map) => {
+      setCheckInsMap(map);
+      const today = getTodayDateString();
+      if (map[today]) {
+        setTodayCheckIn(map[today]);
+      }
+    });
+
     return () => {
       unsubInteractions();
       unsubRoutines();
       unsubActivities();
+      unsubCheckIns();
     };
   }, [currentUser?.uid]);
 
@@ -275,6 +291,17 @@ export default function App() {
               role: m.role,
               text: m.text,
             })),
+            pastEntries: interactions
+              .filter((it) => it.id !== entryId && (it.summary || it.rawText))
+              .slice(-5)
+              .map((it) => ({
+                date: new Date(it.createdAt).toLocaleDateString(),
+                title: it.title,
+                mood: it.mood,
+                summary: it.summary,
+                themes: it.themes,
+                snippet: it.rawText ? it.rawText.slice(0, 150) : undefined,
+              })),
             userProfile: currentUser.profile,
             checkIn: todayCheckIn || currentUser.profile?.latestCheckIn || null,
             clientNow: new Date().toISOString(),
@@ -292,6 +319,8 @@ export default function App() {
           id: `msg_m_${Date.now()}`,
           role: "model",
           text: data.reply,
+          modelUsed: data.modelUsed,
+          depth,
           suggestedActivities: Array.isArray(data.suggestedActivities) && data.suggestedActivities.length > 0
             ? data.suggestedActivities
             : undefined,
@@ -300,11 +329,13 @@ export default function App() {
 
         const finalizedEntry: JournalInteraction = {
           ...baseEntry,
+          depth,
           messages: [...updatedMessages, modelMsg],
           summary: data.summary || baseEntry.summary,
           themes: Array.isArray(data.themes) ? data.themes : baseEntry.themes,
           analysis: data.analysis || baseEntry.analysis,
           modelUsed: data.modelUsed,
+          usage: data.usage || baseEntry.usage,
           updatedAt: Date.now(),
         };
 
@@ -510,6 +541,138 @@ export default function App() {
     setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
   };
 
+  // Daily Check-In Reminder Toggle & Update Handlers
+  const handleToggleDailyReminder = async () => {
+    if (!currentUser?.uid) return;
+    const currentSetting = currentUser.profile?.dailyReminder || {
+      enabled: false,
+      time: "20:00",
+      label: "Daily Mindful Check-in & Journaling",
+      notifyBrowser: true,
+      syncGoogleCalendar: false,
+    };
+    const newEnabled = !currentSetting.enabled;
+
+    // Request notification permission if enabling
+    if (newEnabled && typeof window !== "undefined" && "Notification" in window) {
+      if (Notification.permission === "default") {
+        try {
+          await Notification.requestPermission();
+        } catch (e) {
+          console.warn("Notification permission request notice:", e);
+        }
+      }
+    }
+
+    const updatedReminder: CheckInReminderSetting = {
+      ...currentSetting,
+      enabled: newEnabled,
+      time: currentSetting.time || "20:00",
+      updatedAt: Date.now(),
+    };
+
+    const updatedProfile: UserProfile = {
+      ...currentUser.profile,
+      dailyReminder: updatedReminder,
+      updatedAt: Date.now(),
+    };
+
+    // Optimistic UI state
+    setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
+
+    setReminderToast({
+      message: newEnabled
+        ? `Daily check-in reminder turned ON (${updatedReminder.time})`
+        : "Daily check-in reminder turned OFF",
+      type: newEnabled ? "success" : "info",
+    });
+    setTimeout(() => setReminderToast(null), 3500);
+
+    try {
+      await saveUserProfile(currentUser.uid, updatedProfile);
+    } catch (err) {
+      console.warn("Failed to persist daily reminder toggle:", err);
+    }
+  };
+
+  const handleUpdateDailyReminder = async (setting: CheckInReminderSetting) => {
+    if (!currentUser?.uid) return;
+    const updatedProfile: UserProfile = {
+      ...currentUser.profile,
+      dailyReminder: setting,
+      updatedAt: Date.now(),
+    };
+    setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
+
+    setReminderToast({
+      message: setting.enabled
+        ? `Daily check-in reminder scheduled for ${setting.time}`
+        : "Daily check-in reminder disabled",
+      type: "success",
+    });
+    setTimeout(() => setReminderToast(null), 3500);
+
+    try {
+      await saveUserProfile(currentUser.uid, updatedProfile);
+    } catch (err) {
+      console.warn("Failed to persist daily reminder update:", err);
+    }
+  };
+
+  // Background timer checking daily reminder time
+  useEffect(() => {
+    if (!currentUser?.profile?.dailyReminder?.enabled) return;
+
+    const reminder = currentUser.profile.dailyReminder;
+    const targetTime = reminder.time || "20:00";
+
+    const checkReminder = () => {
+      const now = new Date();
+      const currentHours = String(now.getHours()).padStart(2, "0");
+      const currentMinutes = String(now.getMinutes()).padStart(2, "0");
+      const currentTimeStr = `${currentHours}:${currentMinutes}`;
+      const todayStr = getTodayDateString();
+
+      if (currentTimeStr === targetTime && reminder.lastNotifiedDate !== todayStr) {
+        if (
+          reminder.notifyBrowser &&
+          typeof window !== "undefined" &&
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          try {
+            new Notification("🌱 Mindful Check-in & Journaling", {
+              body: "Take 2 minutes to pause, check in with your mind & body, and log today's reflection.",
+              icon: "/favicon.ico",
+            });
+          } catch (e) {
+            console.warn("Browser notification trigger notice:", e);
+          }
+        }
+
+        setReminderToast({
+          message: "🌱 Time for your daily mindful check-in & reflection!",
+          type: "info",
+        });
+
+        const updatedSetting: CheckInReminderSetting = {
+          ...reminder,
+          lastNotifiedDate: todayStr,
+        };
+        const updatedProfile: UserProfile = {
+          ...currentUser.profile,
+          dailyReminder: updatedSetting,
+          updatedAt: Date.now(),
+        };
+        setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
+        saveUserProfile(currentUser.uid, updatedProfile).catch(() => {});
+      }
+    };
+
+    const intervalId = setInterval(checkReminder, 30000);
+    return () => clearInterval(intervalId);
+  }, [currentUser?.profile?.dailyReminder]);
+
   // 1. Initial Loading Screen
   if (authLoading) {
     return (
@@ -555,6 +718,8 @@ export default function App() {
         onSignOut={handleSignOut}
         onToggleMobileMenu={() => setMobileMenuOpen(!mobileMenuOpen)}
         onOpenCalendarModal={() => setCalendarModalOpen(true)}
+        onToggleDailyReminder={handleToggleDailyReminder}
+        onOpenReminderModal={() => setReminderModalOpen(true)}
         syncStatus={isSaving ? "saving" : saveError ? "error" : "synced"}
       />
 
@@ -671,7 +836,33 @@ export default function App() {
       <CalendarModal
         isOpen={calendarModalOpen}
         onClose={() => setCalendarModalOpen(false)}
+        user={currentUser}
+        checkInsMap={checkInsMap}
+        onSaveCheckIn={handleSaveCheckIn}
+        onOpenReminderModal={() => setReminderModalOpen(true)}
       />
+
+      {/* Global Daily Reminder Configuration Modal */}
+      {currentUser && (
+        <DailyReminderModal
+          isOpen={reminderModalOpen}
+          onClose={() => setReminderModalOpen(false)}
+          user={currentUser}
+          onUpdateReminder={handleUpdateDailyReminder}
+        />
+      )}
+
+      {/* In-App Reminder Status Toast */}
+      {reminderToast && (
+        <div className="fixed bottom-6 right-6 z-50 flex items-center space-x-2.5 px-4 py-2.5 rounded-xl bg-[#211E1B] border border-[#C89B3C]/40 text-[#F3EFE8] shadow-xl text-xs animate-fade-in">
+          <span
+            className={`w-2 h-2 rounded-full ${
+              reminderToast.type === "success" ? "bg-emerald-400" : "bg-[#C89B3C]"
+            } animate-ping`}
+          />
+          <span className="font-medium">{reminderToast.message}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -268,6 +268,14 @@ export async function createGoogleCalendarEvent(
     payload.colorId = input.colorId;
   }
 
+  if (input.location) {
+    payload.location = input.location;
+  }
+
+  if (input.recurrence && input.recurrence.length > 0) {
+    payload.recurrence = input.recurrence;
+  }
+
   if (input.isAllDay) {
     payload.start = { date: input.startTime.split("T")[0] };
     payload.end = { date: input.endTime.split("T")[0] };

@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Sun,
+  Moon,
   BookOpen,
   Sparkles,
   Compass,
@@ -11,6 +12,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { NavigationTab, AuthUserState } from "../types";
+import { useTheme } from "../context/ThemeContext";
 
 interface NavigationProps {
   activeTab: NavigationTab;
@@ -42,6 +44,8 @@ export const Navigation: React.FC<NavigationProps> = ({
   onCloseMobileMenu,
   counts,
 }) => {
+  const { theme, setTheme, isDark } = useTheme();
+
   const NAV_ITEMS: NavItem[] = [
     {
       id: "today",
@@ -153,7 +157,7 @@ export const Navigation: React.FC<NavigationProps> = ({
           />
 
           {/* Drawer Container */}
-          <div className="relative w-4/5 max-w-xs h-full bg-[#211E1B] border-r border-[#38322D] p-5 flex flex-col justify-between z-10 shadow-2xl">
+          <div className="relative w-4/5 max-w-xs h-full bg-[#211E1B] border-r border-[#38322D] p-5 flex flex-col justify-between z-10 shadow-2xl overflow-y-auto">
             <div>
               {/* Drawer Header */}
               <div className="flex items-center justify-between pb-4 border-b border-[#38322D] mb-4">
@@ -165,16 +169,48 @@ export const Navigation: React.FC<NavigationProps> = ({
                     <h3 className="font-serif font-bold text-sm text-[#F3EFE8]">
                       Wellbeing App
                     </h3>
-                    <p className="text-[10px] text-[#B7AFA7]">Phase 1 Foundation</p>
+                    <p className="text-[10px] text-[#B7AFA7]">Mindful Reflections</p>
                   </div>
                 </div>
                 <button
                   onClick={onCloseMobileMenu}
-                  className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513] cursor-pointer"
+                  className="p-2 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513] cursor-pointer"
                   aria-label="Close menu"
                 >
                   <X className="w-5 h-5" />
                 </button>
+              </div>
+
+              {/* Theme Mode Selection */}
+              <div className="mb-4 pb-3 border-b border-[#38322D]">
+                <p className="text-[10px] font-semibold text-[#8c847d] uppercase tracking-wider mb-2">
+                  Appearance
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => setTheme("light")}
+                    className={`flex items-center justify-center space-x-2 py-2 px-3 rounded-xl border text-xs font-medium cursor-pointer transition-all ${
+                      !isDark
+                        ? "bg-[#C89B3C]/15 border-[#C89B3C] text-[#C89B3C] font-semibold"
+                        : "bg-[#171513] border-[#38322D] text-[#B7AFA7] hover:bg-[#2c2723]"
+                    }`}
+                  >
+                    <Sun className="w-3.5 h-3.5" />
+                    <span>Light</span>
+                  </button>
+
+                  <button
+                    onClick={() => setTheme("dark")}
+                    className={`flex items-center justify-center space-x-2 py-2 px-3 rounded-xl border text-xs font-medium cursor-pointer transition-all ${
+                      isDark
+                        ? "bg-[#C89B3C]/15 border-[#C89B3C] text-[#C89B3C] font-semibold"
+                        : "bg-[#171513] border-[#38322D] text-[#B7AFA7] hover:bg-[#2c2723]"
+                    }`}
+                  >
+                    <Moon className="w-3.5 h-3.5" />
+                    <span>Dark</span>
+                  </button>
+                </div>
               </div>
 
               {/* Navigation Links */}
@@ -220,7 +256,7 @@ export const Navigation: React.FC<NavigationProps> = ({
             </div>
 
             {/* User Session Mini Profile */}
-            <div className="pt-4 border-t border-[#38322D] flex items-center space-x-3">
+            <div className="pt-4 border-t border-[#38322D] flex items-center space-x-3 mt-4">
               {user.photoURL ? (
                 <img
                   src={user.photoURL}
@@ -247,7 +283,7 @@ export const Navigation: React.FC<NavigationProps> = ({
       )}
 
       {/* 3. Mobile Bottom Tab Bar */}
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#211E1B]/95 backdrop-blur-md border-t border-[#38322D] px-2 py-1.5 flex items-center justify-around">
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#211E1B]/95 backdrop-blur-md border-t border-[#38322D] px-1 py-1.5 flex items-center justify-around pb-[max(0.375rem,env(safe-area-inset-bottom))]">
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -257,16 +293,16 @@ export const Navigation: React.FC<NavigationProps> = ({
               key={item.id}
               id={`bottom-nav-${item.id}`}
               onClick={() => onNavigate(item.id)}
-              className={`flex flex-col items-center justify-center py-1 px-2 rounded-xl transition-all relative cursor-pointer ${
+              className={`flex flex-col items-center justify-center py-1.5 px-2.5 rounded-xl transition-all relative cursor-pointer min-w-[48px] min-h-[44px] ${
                 isActive ? "text-[#C89B3C]" : "text-[#B7AFA7] hover:text-[#F3EFE8]"
               }`}
             >
               <Icon className="w-5 h-5" />
-              <span className="text-[10px] mt-0.5 font-medium">
+              <span className="text-[10px] mt-0.5 font-medium leading-none">
                 {item.shortLabel}
               </span>
               {isActive && (
-                <span className="w-1 h-1 rounded-full bg-[#C89B3C] mt-0.5" />
+                <span className="w-1 h-1 rounded-full bg-[#C89B3C] mt-1" />
               )}
             </button>
           );
@@ -275,3 +311,4 @@ export const Navigation: React.FC<NavigationProps> = ({
     </>
   );
 };
+

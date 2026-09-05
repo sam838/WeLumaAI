@@ -9,8 +9,13 @@ import {
   AlertCircle,
   HelpCircle,
   Loader2,
+  MapPin,
+  ExternalLink,
+  Star,
+  Search,
+  Navigation,
 } from "lucide-react";
-import { SuggestedActivityItem, WellbeingDomain } from "../types";
+import { SuggestedActivityItem, WellbeingDomain, RecommendedPlace } from "../types";
 import {
   parseActivityScheduleDateTime,
   formatDateToYYYYMMDD,
@@ -32,6 +37,7 @@ interface ScheduleActivityModalProps {
     endDate: Date;
     durationMinutes: number;
     reason?: string;
+    location?: string;
   }) => Promise<void>;
   isScheduling: boolean;
 }
@@ -51,7 +57,14 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
   const [customTitle, setCustomTitle] = useState<string>("");
   const [errorNotice, setErrorNotice] = useState<string | null>(null);
 
-  // Initialize or recompute parsed date when modal opens or activity changes
+  // Google Maps Places state
+  const [placesList, setPlacesList] = useState<RecommendedPlace[]>([]);
+  const [selectedPlace, setSelectedPlace] = useState<RecommendedPlace | null>(null);
+  const [customLocationText, setCustomLocationText] = useState<string>("");
+  const [isSearchingPlaces, setIsSearchingPlaces] = useState<boolean>(false);
+  const [venueSearchInput, setVenueSearchInput] = useState<string>("");
+
+  // Initialize or recompute parsed date & places when modal opens or activity changes
   useEffect(() => {
     if (activity && isOpen) {
       const parsed = parseActivityScheduleDateTime(activity);
@@ -60,10 +73,64 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
       setDuration(parsed.durationMinutes);
       setCustomTitle(activity.title);
       setErrorNotice(null);
+
+      // Handle places
+      const initialPlaces = activity.recommendedPlaces || [];
+      // Ensure sorted by distance from nearest to furthest
+      const sorted = [...initialPlaces].sort((a, b) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999));
+      setPlacesList(sorted);
+
+      const defaultPlace = activity.selectedPlace || (sorted.length > 0 ? sorted[0] : null);
+      setSelectedPlace(defaultPlace);
+      if (defaultPlace) {
+        setCustomLocationText(`${defaultPlace.name}, ${defaultPlace.address}`);
+      } else {
+        setCustomLocationText("");
+      }
+      setVenueSearchInput(activity.venueQuery || "");
     }
   }, [activity, isOpen]);
 
   if (!isOpen || !activity) return null;
+
+  // Search nearby places on demand
+  const handleSearchPlaces = async () => {
+    if (!venueSearchInput.trim()) return;
+    setIsSearchingPlaces(true);
+    try {
+      const res = await fetch("/api/maps/places-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: venueSearchInput.trim(),
+          location: locationName || "East Surabaya",
+          maxResults: 4,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.places)) {
+          const sorted = data.places.sort(
+            (a: RecommendedPlace, b: RecommendedPlace) => (a.distanceKm ?? 999) - (b.distanceKm ?? 999)
+          );
+          setPlacesList(sorted);
+          if (sorted.length > 0) {
+            setSelectedPlace(sorted[0]);
+            setCustomLocationText(`${sorted[0].name}, ${sorted[0].address}`);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn("Places search error:", err);
+    } finally {
+      setIsSearchingPlaces(false);
+    }
+  };
+
+  const handleSelectPlace = (place: RecommendedPlace) => {
+    setSelectedPlace(place);
+    setCustomLocationText(`${place.name}, ${place.address}`);
+  };
 
   // Compute live start & end dates from current form inputs
   let computedStartDate: Date | null = null;
@@ -110,6 +177,10 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
       return;
     }
 
+    const finalLocation =
+      customLocationText.trim() ||
+      (selectedPlace ? `${selectedPlace.name}, ${selectedPlace.address}` : undefined);
+
     try {
       setErrorNotice(null);
       await onConfirmSchedule({
@@ -120,6 +191,7 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
         endDate: computedEndDate,
         durationMinutes: duration,
         reason: activity.reason,
+        location: finalLocation,
       });
     } catch (err: any) {
       setErrorNotice(err?.message || "Failed to schedule on Google Calendar.");
@@ -128,11 +200,11 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-fade-in overflow-y-auto"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-lg rounded-3xl bg-[#211E1B] border border-[#38322D] shadow-2xl p-6 space-y-5 animate-scale-up text-[#F3EFE8]"
+        className="relative w-full max-w-xl rounded-3xl bg-[#211E1B] border border-[#38322D] shadow-2xl p-6 space-y-5 animate-scale-up text-[#F3EFE8] my-8 max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -146,7 +218,7 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
                 Schedule with Google Calendar
               </h3>
               <p className="text-xs text-[#B7AFA7]">
-                Smart date confirmation & time customization
+                Smart date confirmation, venue discovery & time customization
               </p>
             </div>
           </div>
@@ -190,6 +262,146 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
               <span>{activity.reason}</span>
             </div>
           )}
+        </div>
+
+        {/* Google Maps / Nearest Venues Section */}
+        <div className="p-3.5 rounded-2xl bg-[#171513] border border-[#38322D] space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5">
+              <MapPin className="w-4 h-4 text-[#C89B3C]" />
+              <label className="text-xs font-bold text-[#F3EFE8]">
+                Location & Recommended Venues
+              </label>
+            </div>
+            <span className="text-[10px] text-[#B7AFA7] bg-[#211E1B] px-2 py-0.5 rounded-md border border-[#38322D]">
+              Near {locationName || "East Surabaya"}
+            </span>
+          </div>
+
+          {/* Quick search input to find other places */}
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#7A746E]" />
+              <input
+                type="text"
+                value={venueSearchInput}
+                onChange={(e) => setVenueSearchInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearchPlaces()}
+                placeholder="Search swimming pool, badminton court, gym..."
+                className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#211E1B] border border-[#38322D] text-xs text-[#F3EFE8] placeholder-[#7A746E] focus:border-[#C89B3C] focus:outline-hidden"
+              />
+            </div>
+            <button
+              type="button"
+              onClick={handleSearchPlaces}
+              disabled={isSearchingPlaces || !venueSearchInput.trim()}
+              className="px-3 py-1.5 rounded-xl bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] border border-[#C89B3C]/30 text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-50"
+            >
+              {isSearchingPlaces ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Navigation className="w-3 h-3" />
+              )}
+              <span>Find</span>
+            </button>
+          </div>
+
+          {/* List of 3-4 nearest places sorted from nearest to furthest */}
+          {placesList.length > 0 && (
+            <div className="space-y-1.5 pt-1">
+              <p className="text-[11px] text-[#B7AFA7] font-medium flex items-center gap-1">
+                <span>Nearest venues (sorted by distance):</span>
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                {placesList.map((place) => {
+                  const isSelected = selectedPlace?.id === place.id;
+                  return (
+                    <div
+                      key={place.id}
+                      onClick={() => handleSelectPlace(place)}
+                      className={`p-2.5 rounded-xl border transition-all cursor-pointer flex items-start justify-between gap-2.5 ${
+                        isSelected
+                          ? "bg-[#C89B3C]/10 border-[#C89B3C] text-[#F3EFE8] shadow-xs"
+                          : "bg-[#211E1B] border-[#38322D] hover:border-[#4E463E] text-[#B7AFA7]"
+                      }`}
+                    >
+                      <div className="space-y-1 flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-xs font-bold text-[#F3EFE8] truncate">
+                            {place.name}
+                          </span>
+                          {place.distanceKm !== undefined && (
+                            <span className="text-[10px] font-bold px-1.5 py-0.2 rounded-md bg-[#2C2723] text-[#C89B3C] border border-[#C89B3C]/30 shrink-0">
+                              {place.distanceKm} km away
+                            </span>
+                          )}
+                          {place.rating !== undefined && (
+                            <span className="text-[10px] text-[#E6E1D8] flex items-center gap-0.5 shrink-0">
+                              <Star className="w-3 h-3 fill-[#C89B3C] text-[#C89B3C]" />
+                              <span>{place.rating}</span>
+                              {place.userRatingsTotal && (
+                                <span className="text-[#7A746E]">({place.userRatingsTotal})</span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-[#B7AFA7] truncate">
+                          {place.address}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0 self-center">
+                        {place.googleMapsUrl && (
+                          <a
+                            href={place.googleMapsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="p-1.5 rounded-lg text-[#7A746E] hover:text-[#C89B3C] hover:bg-[#2C2723] transition-colors"
+                            title="Open in Google Maps"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
+                        )}
+                        <div
+                          className={`w-4 h-4 rounded-full border flex items-center justify-center ${
+                            isSelected
+                              ? "border-[#C89B3C] bg-[#C89B3C] text-[#171513]"
+                              : "border-[#4E463E] bg-transparent"
+                          }`}
+                        >
+                          {isSelected && <Check className="w-2.5 h-2.5 stroke-[3]" />}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Location field to save on Google Calendar */}
+          <div className="pt-1">
+            <label className="block text-[11px] font-semibold text-[#B7AFA7] mb-1">
+              Google Calendar Location Field
+            </label>
+            <div className="relative">
+              <MapPin className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[#C89B3C]" />
+              <input
+                type="text"
+                value={customLocationText}
+                onChange={(e) => {
+                  setCustomLocationText(e.target.value);
+                  setSelectedPlace(null);
+                }}
+                placeholder="e.g. Kolam Renang Manyar, Jl. Raya Manyar No. 80, Surabaya"
+                className="w-full pl-8 pr-3 py-2 rounded-xl bg-[#211E1B] border border-[#38322D] focus:border-[#C89B3C] text-xs text-[#F3EFE8] outline-hidden"
+              />
+            </div>
+            <p className="text-[10px] text-[#7A746E] mt-1">
+              This address will be stored directly inside the Google Calendar event location.
+            </p>
+          </div>
         </div>
 
         {/* Interactive Clarification Question / Smart Date Selection */}

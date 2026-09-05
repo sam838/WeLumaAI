@@ -29,6 +29,7 @@ import {
   WellbeingRoutine,
   WellbeingActivity,
   DailyCheckInState,
+  CheckInStats,
 } from "./types";
 
 export enum OperationType {
@@ -640,10 +641,43 @@ export function getTodayDateString(): string {
   return `${year}-${month}-${day}`;
 }
 
+export function getAllLocalCheckIns(userId: string): Record<string, DailyCheckInState> {
+  if (!userId) return {};
+  try {
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_CHECKIN}_${userId}_map`);
+    if (raw) {
+      return JSON.parse(raw);
+    }
+  } catch (e) {
+    console.warn("Notice reading local check-in map:", e);
+  }
+
+  // Fallback: scan any keys matching prefix
+  const result: Record<string, DailyCheckInState> = {};
+  try {
+    const prefix = `${LOCAL_STORAGE_CHECKIN}_${userId}_`;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(prefix) && !key.endsWith("_map")) {
+        const itemRaw = localStorage.getItem(key);
+        if (itemRaw) {
+          const item = JSON.parse(itemRaw) as DailyCheckInState;
+          if (item?.date) result[item.date] = item;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return result;
+}
+
 export function getLocalCheckIn(userId: string, date: string): DailyCheckInState | null {
   try {
     const raw = localStorage.getItem(`${LOCAL_STORAGE_CHECKIN}_${userId}_${date}`);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
+    const map = getAllLocalCheckIns(userId);
+    return map[date] || null;
   } catch {
     return null;
   }
@@ -654,6 +688,12 @@ export function saveLocalCheckIn(userId: string, checkIn: DailyCheckInState): vo
     localStorage.setItem(
       `${LOCAL_STORAGE_CHECKIN}_${userId}_${checkIn.date}`,
       JSON.stringify(checkIn)
+    );
+    const map = getAllLocalCheckIns(userId);
+    map[checkIn.date] = checkIn;
+    localStorage.setItem(
+      `${LOCAL_STORAGE_CHECKIN}_${userId}_map`,
+      JSON.stringify(map)
     );
   } catch (e) {
     console.warn("Local check-in save error:", e);
@@ -698,6 +738,115 @@ export async function getCheckInFromFirestore(
     console.warn("Firestore getCheckInFromFirestore notice:", err);
   }
   return local;
+}
+
+export function subscribeUserCheckIns(
+  userId: string,
+  onData: (items: Record<string, DailyCheckInState>) => void
+): Unsubscribe {
+  if (!userId) {
+    onData({});
+    return () => {};
+  }
+
+  // Instant render from local cache
+  const localMap = getAllLocalCheckIns(userId);
+  onData(localMap);
+
+  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
+    const onStorageChange = () => {
+      onData(getAllLocalCheckIns(userId));
+    };
+    window.addEventListener("storage", onStorageChange);
+    return () => window.removeEventListener("storage", onStorageChange);
+  }
+
+  const checkinsRef = collection(db, "users", userId, "checkins");
+  return onSnapshot(
+    checkinsRef,
+    (snapshot) => {
+      const map: Record<string, DailyCheckInState> = { ...getAllLocalCheckIns(userId) };
+      snapshot.forEach((docSnap) => {
+        const item = docSnap.data() as DailyCheckInState;
+        if (item?.date) {
+          map[item.date] = item;
+          // Sync to individual key as well
+          saveLocalCheckIn(userId, item);
+        }
+      });
+      localStorage.setItem(`${LOCAL_STORAGE_CHECKIN}_${userId}_map`, JSON.stringify(map));
+      onData(map);
+    },
+    (err) => {
+      console.warn("Firestore checkins subscription fallback to local cache:", err);
+      onData(getAllLocalCheckIns(userId));
+    }
+  );
+}
+
+export function computeCheckInStats(
+  checkInsMap: Record<string, DailyCheckInState>,
+  referenceDate: Date = new Date()
+): CheckInStats {
+  const dates = Object.keys(checkInsMap).filter((d) => Boolean(checkInsMap[d])).sort();
+  const dateSet = new Set(dates);
+
+  const refYear = referenceDate.getFullYear();
+  const refMonth = referenceDate.getMonth();
+  const todayStr = `${refYear}-${String(refMonth + 1).padStart(2, "0")}-${String(referenceDate.getDate()).padStart(2, "0")}`;
+  const checkedInToday = dateSet.has(todayStr);
+
+  const monthPrefix = `${refYear}-${String(refMonth + 1).padStart(2, "0")}`;
+  const thisMonthCount = dates.filter((d) => d.startsWith(monthPrefix)).length;
+
+  let currentStreak = 0;
+  const checkCursor = new Date(referenceDate);
+
+  // If today hasn't been checked in yet, calculate unbroken streak leading up to yesterday
+  if (!checkedInToday) {
+    checkCursor.setDate(checkCursor.getDate() - 1);
+  }
+
+  while (true) {
+    const cursorStr = `${checkCursor.getFullYear()}-${String(checkCursor.getMonth() + 1).padStart(2, "0")}-${String(checkCursor.getDate()).padStart(2, "0")}`;
+    if (dateSet.has(cursorStr)) {
+      currentStreak++;
+      checkCursor.setDate(checkCursor.getDate() - 1);
+    } else {
+      break;
+    }
+  }
+
+  // Longest streak
+  let longestStreak = 0;
+  if (dates.length > 0) {
+    const sorted = [...dates].sort();
+    let run = 1;
+    longestStreak = 1;
+    for (let i = 1; i < sorted.length; i++) {
+      const prev = new Date(sorted[i - 1] + "T00:00:00");
+      const curr = new Date(sorted[i] + "T00:00:00");
+      const diffDays = Math.round((curr.getTime() - prev.getTime()) / (1000 * 60 * 60 * 24));
+      if (diffDays === 1) {
+        run++;
+        if (run > longestStreak) longestStreak = run;
+      } else if (diffDays > 1) {
+        run = 1;
+      }
+    }
+  }
+  if (currentStreak > longestStreak) longestStreak = currentStreak;
+
+  const monthName = referenceDate.toLocaleDateString("en-US", { month: "long" });
+
+  return {
+    currentStreak,
+    longestStreak,
+    thisMonthCount,
+    totalCheckIns: dates.length,
+    monthName,
+    checkedInToday,
+  };
 }
 
 /* =========================================================================

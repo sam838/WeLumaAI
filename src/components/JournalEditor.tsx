@@ -21,6 +21,7 @@ import {
   ListTodo
 } from "lucide-react";
 import { JournalInteraction, JournalMode, ReflectionDepth } from "../types";
+import { MarkdownRenderer } from "./MarkdownRenderer";
 
 interface JournalEditorProps {
   interaction: JournalInteraction | null;
@@ -390,9 +391,15 @@ export const JournalEditor: React.FC<JournalEditorProps> = ({
                     )}
 
                     {/* Message Body */}
-                    <div className="whitespace-pre-wrap font-sans text-[#F3EFE8] leading-relaxed">
-                      {msg.text}
-                    </div>
+                    {isUser ? (
+                      <div className="whitespace-pre-wrap font-sans text-[#F3EFE8] leading-relaxed">
+                        {msg.text}
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        <MarkdownRenderer content={msg.text} />
+                      </div>
+                    )}
 
                     {/* Time footer */}
                     <div

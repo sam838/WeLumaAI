@@ -20,9 +20,22 @@ import {
   ShieldCheck,
   Video,
   MapPin,
-  BellRing
+  BellRing,
+  Smile,
+  Flame,
+  Zap,
+  Edit3,
 } from "lucide-react";
-import { GoogleCalendarEvent, CalendarReminderInput, CalendarSyncState } from "../types";
+import {
+  GoogleCalendarEvent,
+  CalendarReminderInput,
+  CalendarSyncState,
+  AuthUserState,
+  DailyCheckInState,
+  MoodType,
+  CheckInStats,
+} from "../types";
+import { computeCheckInStats, getTodayDateString } from "../firebase";
 import {
   getStoredToken,
   requestGoogleCalendarAuth,
@@ -41,6 +54,10 @@ interface CalendarModalProps {
   onClose: () => void;
   onInsertEventToJournal?: (event: GoogleCalendarEvent) => void;
   initialTab?: "today" | "full" | "create";
+  user?: AuthUserState;
+  checkInsMap?: Record<string, DailyCheckInState>;
+  onSaveCheckIn?: (checkIn: DailyCheckInState) => void;
+  onOpenReminderModal?: () => void;
 }
 
 const MONTH_NAMES = [
@@ -49,6 +66,30 @@ const MONTH_NAMES = [
 ];
 
 const DAYS_OF_WEEK = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const MOOD_EMOJIS: Record<MoodType, string> = {
+  calm: "🌿",
+  joyful: "✨",
+  reflective: "🌊",
+  grateful: "💛",
+  energized: "⚡",
+  neutral: "☁️",
+  anxious: "🍃",
+  drained: "🌙",
+  overwhelmed: "🌀",
+};
+
+const MOOD_OPTIONS: { id: MoodType; label: string; icon: string }[] = [
+  { id: "calm", label: "Calm", icon: "🌿" },
+  { id: "joyful", label: "Joyful", icon: "✨" },
+  { id: "reflective", label: "Reflective", icon: "🌊" },
+  { id: "grateful", label: "Grateful", icon: "💛" },
+  { id: "energized", label: "Energized", icon: "⚡" },
+  { id: "neutral", label: "Neutral", icon: "☁️" },
+  { id: "anxious", label: "Anxious", icon: "🍃" },
+  { id: "drained", label: "Drained", icon: "🌙" },
+  { id: "overwhelmed", label: "Overwhelmed", icon: "🌀" },
+];
 
 const EVENT_COLORS: { [key: string]: { bg: string; text: string; border: string; label: string } } = {
   default: { bg: "bg-[#C89B3C]/15", text: "text-[#C89B3C]", border: "border-[#C89B3C]/40", label: "Gold Accent" },
@@ -63,6 +104,10 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
   onClose,
   onInsertEventToJournal,
   initialTab = "today",
+  user,
+  checkInsMap = {},
+  onSaveCheckIn,
+  onOpenReminderModal,
 }) => {
   const [activeTab, setActiveTab] = useState<"today" | "full" | "create">("today");
   const [syncState, setSyncState] = useState<CalendarSyncState>({
@@ -80,6 +125,62 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
   const [isLoadingEvents, setIsLoadingEvents] = useState<boolean>(false);
   const [eventFilter, setEventFilter] = useState<"all" | "reminders" | "meetings">("all");
   const [completedTaskIds, setCompletedTaskIds] = useState<{ [id: string]: boolean }>({});
+
+  // Check-in tracking & inline check-in form state
+  const [isCheckingInDate, setIsCheckingInDate] = useState<string | null>(null);
+  const [checkInMood, setCheckInMood] = useState<MoodType>("reflective");
+  const [checkInEnergy, setCheckInEnergy] = useState<number>(3);
+  const [checkInStress, setCheckInStress] = useState<number>(2);
+  const [checkInNotes, setCheckInNotes] = useState<string>("");
+  const [checkInNotice, setCheckInNotice] = useState<string | null>(null);
+
+  const todayStr = useMemo(() => getTodayDateString(), []);
+  const selectedDayStr = useMemo(() => {
+    const y = selectedDay.getFullYear();
+    const m = String(selectedDay.getMonth() + 1).padStart(2, "0");
+    const d = String(selectedDay.getDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }, [selectedDay]);
+
+  const checkInStats: CheckInStats = useMemo(() => {
+    return computeCheckInStats(checkInsMap, currentDate);
+  }, [checkInsMap, currentDate]);
+
+  const todayCheckIn = checkInsMap[todayStr];
+  const selectedDayCheckIn = checkInsMap[selectedDayStr];
+
+  const handleOpenInlineCheckIn = (dateStr: string) => {
+    const existing = checkInsMap[dateStr];
+    setIsCheckingInDate(dateStr);
+    if (existing) {
+      setCheckInMood(existing.mood);
+      setCheckInEnergy(existing.energy);
+      setCheckInStress(existing.stress);
+      setCheckInNotes(existing.notes || "");
+    } else {
+      setCheckInMood("reflective");
+      setCheckInEnergy(3);
+      setCheckInStress(2);
+      setCheckInNotes("");
+    }
+  };
+
+  const handleSaveInlineCheckIn = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!isCheckingInDate || !onSaveCheckIn) return;
+    const item: DailyCheckInState = {
+      date: isCheckingInDate,
+      mood: checkInMood,
+      energy: checkInEnergy,
+      stress: checkInStress,
+      notes: checkInNotes.trim() || undefined,
+      updatedAt: Date.now(),
+    };
+    onSaveCheckIn(item);
+    setCheckInNotice(`Check-in recorded for ${isCheckingInDate}!`);
+    setIsCheckingInDate(null);
+    setTimeout(() => setCheckInNotice(null), 3000);
+  };
 
   // New Event Form State
   const [newTitle, setNewTitle] = useState("");
@@ -652,13 +753,295 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
           {/* TAB 1: TODAY'S TASKS & REMINDERS */}
           {activeTab === "today" && (
             <div className="space-y-6">
+              {/* Check-In Consistency & Daily Reminder Banner */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                {/* 1. Streak */}
+                <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center gap-3 shadow-xs">
+                  <div className="w-10 h-10 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-400 flex items-center justify-center shrink-0">
+                    <Flame className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-semibold text-[#A69E95] uppercase tracking-wider block">
+                      Check-in Streak
+                    </span>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-xl font-bold font-serif text-[#F3EFE8]">
+                        {checkInStats.currentStreak}
+                      </span>
+                      <span className="text-xs text-[#A69E95]">days</span>
+                      {checkInStats.longestStreak > 0 && (
+                        <span className="text-[10px] text-[#C89B3C] ml-1">
+                          (Best: {checkInStats.longestStreak})
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Monthly Count */}
+                <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center gap-3 shadow-xs">
+                  <div className="w-10 h-10 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 text-[#C89B3C] flex items-center justify-center shrink-0">
+                    <CalendarDays className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-semibold text-[#A69E95] uppercase tracking-wider block">
+                      This Month ({checkInStats.monthName})
+                    </span>
+                    <div className="flex items-baseline gap-1.5">
+                      <span className="text-xl font-bold font-serif text-[#F3EFE8]">
+                        {checkInStats.thisMonthCount}
+                      </span>
+                      <span className="text-xs text-[#A69E95]">check-ins</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 3. Daily Reminder */}
+                <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-2 shadow-xs">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center justify-center shrink-0">
+                      <BellRing className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] font-semibold text-[#A69E95] uppercase tracking-wider block">
+                        Everyday Reminder
+                      </span>
+                      <span className="text-xs font-bold text-[#F3EFE8]">
+                        {user?.profile?.dailyReminder?.enabled
+                          ? user?.profile?.dailyReminder?.time || "20:00"
+                          : "Not scheduled"}
+                      </span>
+                    </div>
+                  </div>
+                  {onOpenReminderModal && (
+                    <button
+                      onClick={onOpenReminderModal}
+                      className="px-2.5 py-1 rounded-lg bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] text-xs font-semibold border border-[#38322D] transition-colors cursor-pointer shrink-0"
+                    >
+                      {user?.profile?.dailyReminder?.enabled ? "Change" : "Set Time"}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Today's Full Check-In Status & Logger */}
+              <div className="p-5 rounded-2xl bg-[#171513] border border-[#38322D] space-y-4 shadow-sm">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#2C2723]">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/15 border border-[#C89B3C]/30 text-[#C89B3C] flex items-center justify-center shrink-0">
+                      <Smile className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-[#F3EFE8] font-serif">
+                        Today's Mind & Body Check-In
+                      </h4>
+                      <span className="text-xs text-[#A69E95]">
+                        Daily check-in status and wellness balance
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {todayCheckIn ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 px-3 py-1 rounded-full">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Already Checked In Today
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-amber-300 bg-amber-950/40 border border-amber-800/40 px-3 py-1 rounded-full">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                        Hasn't Checked In Today
+                      </span>
+                    )}
+
+                    {onSaveCheckIn && (
+                      <button
+                        onClick={() => handleOpenInlineCheckIn(todayStr)}
+                        className="px-3 py-1 rounded-xl bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] text-xs font-semibold border border-[#38322D] transition-colors cursor-pointer flex items-center gap-1"
+                      >
+                        <Edit3 className="w-3 h-3" />
+                        <span>{todayCheckIn ? "Update" : "Check In Now"}</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {checkInNotice && (
+                  <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-800/60 text-emerald-300 text-xs flex items-center gap-2">
+                    <Check className="w-4 h-4 text-emerald-400" />
+                    <span>{checkInNotice}</span>
+                  </div>
+                )}
+
+                {todayCheckIn ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="p-3 rounded-xl bg-[#211E1B] border border-[#38322D] flex items-center gap-3">
+                      <span className="text-2xl">{MOOD_EMOJIS[todayCheckIn.mood] || "🌿"}</span>
+                      <div>
+                        <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block">Emotional State</span>
+                        <span className="text-xs font-bold text-[#F3EFE8] capitalize">{todayCheckIn.mood}</span>
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-[#211E1B] border border-[#38322D] flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#C89B3C]/10 text-[#C89B3C] flex items-center justify-center font-bold text-xs">
+                        ⚡
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block">Energy Level</span>
+                        <span className="text-xs font-bold text-[#F3EFE8]">{todayCheckIn.energy} / 5</span>
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-xl bg-[#211E1B] border border-[#38322D] flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-[#738F85]/20 text-[#8CAEA2] flex items-center justify-center font-bold text-xs">
+                        🍃
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block">Stress Level</span>
+                        <span className="text-xs font-bold text-[#F3EFE8]">{todayCheckIn.stress} / 5</span>
+                      </div>
+                    </div>
+                    {todayCheckIn.notes && (
+                      <div className="sm:col-span-3 p-3 rounded-xl bg-[#211E1B] border border-[#38322D] text-xs text-[#D8D2C9]">
+                        <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block mb-1">Today's Notes</span>
+                        <p className="italic">"{todayCheckIn.notes}"</p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-xl bg-[#211E1B] border border-[#38322D]">
+                    <div className="space-y-0.5 text-center sm:text-left">
+                      <p className="text-xs font-semibold text-[#F3EFE8]">
+                        Take a 60-second pause to record your mood, energy, and stress.
+                      </p>
+                      <p className="text-[11px] text-[#A69E95]">
+                        Checking in daily strengthens your streak and helps Gemini tailor your wellbeing insights.
+                      </p>
+                    </div>
+                    {onSaveCheckIn && (
+                      <button
+                        onClick={() => handleOpenInlineCheckIn(todayStr)}
+                        className="px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#B58A32] text-[#171513] text-xs font-bold transition-all shadow-sm shrink-0 cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Smile className="w-3.5 h-3.5" />
+                        <span>Log Today's Check-In</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Inline Check-In Form (if active for today) */}
+                {isCheckingInDate === todayStr && (
+                  <form onSubmit={handleSaveInlineCheckIn} className="p-4 rounded-xl bg-[#1C1A17] border border-[#C89B3C]/40 space-y-4 animate-fade-in">
+                    <div className="flex items-center justify-between pb-2 border-b border-[#2C2723]">
+                      <span className="text-xs font-bold text-[#C89B3C] uppercase tracking-wider flex items-center gap-1.5">
+                        <Smile className="w-3.5 h-3.5" />
+                        Record Check-In for Today ({todayStr})
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setIsCheckingInDate(null)}
+                        className="text-[#A69E95] hover:text-[#F3EFE8] cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* Mood choices */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-[#A69E95]">Select Mood</label>
+                      <div className="grid grid-cols-4 sm:grid-cols-8 gap-1.5">
+                        {MOOD_OPTIONS.map((m) => {
+                          const isSel = checkInMood === m.id;
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setCheckInMood(m.id)}
+                              className={`p-2 rounded-xl border text-center transition-all cursor-pointer ${
+                                isSel
+                                  ? "bg-[#C89B3C]/20 border-[#C89B3C] text-[#F3EFE8]"
+                                  : "bg-[#171513] border-[#38322D] text-[#A69E95] hover:text-[#F3EFE8]"
+                              }`}
+                            >
+                              <span className="text-lg block">{m.icon}</span>
+                              <span className="text-[10px] font-medium capitalize truncate block">{m.label}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Energy & Stress */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="p-3 rounded-xl bg-[#171513] border border-[#38322D] space-y-1.5">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-[#A69E95]">Energy Level</span>
+                          <span className="font-bold text-[#C89B3C]">{checkInEnergy} / 5</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={checkInEnergy}
+                          onChange={(e) => setCheckInEnergy(Number(e.target.value))}
+                          className="w-full accent-[#C89B3C] cursor-pointer"
+                        />
+                      </div>
+
+                      <div className="p-3 rounded-xl bg-[#171513] border border-[#38322D] space-y-1.5">
+                        <div className="flex justify-between text-xs">
+                          <span className="text-[#A69E95]">Stress Level</span>
+                          <span className="font-bold text-[#738F85]">{checkInStress} / 5</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="1"
+                          max="5"
+                          value={checkInStress}
+                          onChange={(e) => setCheckInStress(Number(e.target.value))}
+                          className="w-full accent-[#738F85] cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Optional Note */}
+                    <div className="space-y-1">
+                      <label className="text-xs font-semibold text-[#A69E95]">Brief Thought or Reflection (Optional)</label>
+                      <input
+                        type="text"
+                        placeholder="How are you feeling right now? What's on your mind?"
+                        value={checkInNotes}
+                        onChange={(e) => setCheckInNotes(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl bg-[#171513] border border-[#38322D] text-xs text-[#F3EFE8] outline-none focus:border-[#C89B3C]"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setIsCheckingInDate(null)}
+                        className="px-3 py-1.5 rounded-xl text-xs text-[#A69E95] hover:text-[#F3EFE8] cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="submit"
+                        className="px-4 py-1.5 rounded-xl bg-[#C89B3C] hover:bg-[#B58A32] text-[#171513] text-xs font-bold cursor-pointer"
+                      >
+                        Save Check-In
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+
               {/* Daily Overview Card */}
               <div className="p-4 sm:p-5 rounded-2xl bg-[#171513] border border-[#38322D] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="space-y-1">
                   <div className="flex items-center space-x-2">
                     <Clock className="w-4 h-4 text-[#C89B3C]" />
                     <span className="text-xs font-semibold uppercase tracking-wider text-[#C89B3C]">
-                      Today's Schedule & Check-ins
+                      Today's Schedule & Reminders
                     </span>
                   </div>
                   <h3 className="text-base sm:text-lg font-serif font-bold text-[#F3EFE8]">
@@ -868,158 +1251,421 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
 
           {/* TAB 2: FULL CALENDAR VIEW */}
           {activeTab === "full" && (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-              {/* Left 7 Cols: Monthly Calendar Grid */}
-              <div className="lg:col-span-7 space-y-4">
-                {/* Month Navigator */}
-                <div className="flex items-center justify-between bg-[#171513] p-3 rounded-2xl border border-[#38322D]">
-                  <div className="flex items-center space-x-3">
-                    <h3 className="text-base sm:text-lg font-serif font-bold text-[#F3EFE8]">
-                      {MONTH_NAMES[currentDate.getMonth()]} {currentDate.getFullYear()}
-                    </h3>
-                    <button
-                      onClick={() => {
-                        const now = new Date();
-                        setCurrentDate(now);
-                        setSelectedDay(now);
-                      }}
-                      className="px-2 py-0.5 rounded-md bg-[#2c2723] border border-[#38322D] text-[11px] font-medium text-[#B7AFA7] hover:text-[#F3EFE8] cursor-pointer"
-                    >
-                      Today
-                    </button>
+            <div className="space-y-4">
+              {/* Full Calendar Top Consistency & Streak Bar */}
+              <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] flex flex-wrap items-center justify-between gap-3 shadow-xs">
+                <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                  {/* Streak */}
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-orange-500/10 border border-orange-500/30 text-orange-400 flex items-center justify-center shrink-0">
+                      <Flame className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block font-semibold">Streak</span>
+                      <span className="text-sm font-bold font-serif text-[#F3EFE8]">
+                        {checkInStats.currentStreak} Days
+                      </span>
+                    </div>
                   </div>
 
-                  <div className="flex items-center space-x-1">
-                    <button
-                      onClick={() => {
-                        setCurrentDate(
-                          new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
-                        );
-                      }}
-                      className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
-                      title="Previous Month"
-                    >
-                      <ChevronLeft className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        setCurrentDate(
-                          new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1)
-                        );
-                      }}
-                      className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
-                      title="Next Month"
-                    >
-                      <ChevronRight className="w-4 h-4" />
-                    </button>
+                  {/* Monthly Count */}
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 text-[#C89B3C] flex items-center justify-center shrink-0">
+                      <CalendarDays className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-[#A69E95] uppercase tracking-wider block font-semibold">
+                        This Month ({checkInStats.monthName})
+                      </span>
+                      <span className="text-sm font-bold font-serif text-[#F3EFE8]">
+                        {checkInStats.thisMonthCount} Check-ins
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Today's Status Badge */}
+                  <div className="flex items-center">
+                    {checkInStats.checkedInToday ? (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-950/60 border border-emerald-800/60 text-emerald-300">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                        Today: Already Checked In
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-amber-950/40 border border-amber-800/40 text-amber-300">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-400" />
+                        Today: Hasn't Checked In
+                      </span>
+                    )}
                   </div>
                 </div>
 
-                {/* Days of Week Headers */}
-                <div className="grid grid-cols-7 gap-1 text-center text-xs font-semibold text-[#B7AFA7] py-1">
-                  {DAYS_OF_WEEK.map((d) => (
-                    <div key={d}>{d}</div>
-                  ))}
-                </div>
-
-                {/* 35/42 Days Grid */}
-                <div className="grid grid-cols-7 gap-1">
-                  {calendarDays.map((dayItem, idx) => {
-                    const isSelected = isSameDay(dayItem.date, selectedDay);
-                    const isToday = isSameDay(dayItem.date, new Date());
-
-                    // Find events for this cell
-                    const dayStr = `${dayItem.date.getFullYear()}-${String(dayItem.date.getMonth() + 1).padStart(2, "0")}-${String(dayItem.date.getDate()).padStart(2, "0")}`;
-                    const dayEvts = events.filter((e) => {
-                      const start = e.start.dateTime || e.start.date || "";
-                      return start.startsWith(dayStr);
-                    });
-
-                    return (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => setSelectedDay(dayItem.date)}
-                        className={`min-h-[64px] sm:min-h-[76px] p-1.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
-                          isSelected
-                            ? "bg-[#2c2723] border-[#C89B3C] shadow-md ring-1 ring-[#C89B3C]"
-                            : dayItem.isCurrentMonth
-                            ? "bg-[#171513] border-[#38322D] hover:border-[#B7AFA7]/60"
-                            : "bg-[#171513]/40 border-[#38322D]/40 opacity-40 hover:opacity-70"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between w-full">
-                          <span
-                            className={`text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full ${
-                              isToday
-                                ? "bg-[#C89B3C] text-[#171513]"
-                                : isSelected
-                                ? "text-[#C89B3C]"
-                                : dayItem.isCurrentMonth
-                                ? "text-[#F3EFE8]"
-                                : "text-[#B7AFA7]"
-                            }`}
-                          >
-                            {dayItem.date.getDate()}
-                          </span>
-
-                          {dayEvts.length > 0 && (
-                            <span className="text-[9px] px-1 rounded bg-[#38322D] text-[#B7AFA7] font-mono">
-                              {dayEvts.length}
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Tiny Event Pills */}
-                        <div className="w-full space-y-0.5 overflow-hidden">
-                          {dayEvts.slice(0, 2).map((ev) => (
-                            <div
-                              key={ev.id}
-                              className="text-[9px] truncate px-1 py-0.5 rounded bg-[#C89B3C]/10 text-[#C89B3C] leading-none"
-                            >
-                              {ev.summary}
-                            </div>
-                          ))}
-                          {dayEvts.length > 2 && (
-                            <div className="text-[8px] text-[#B7AFA7] text-right">
-                              +{dayEvts.length - 2} more
-                            </div>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
+                {/* Everyday Reminder trigger */}
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 text-xs text-[#A69E95]">
+                    <BellRing className="w-3.5 h-3.5 text-[#C89B3C]" />
+                    <span>Everyday Reminder:</span>
+                    <strong className="text-[#F3EFE8]">
+                      {user?.profile?.dailyReminder?.enabled
+                        ? user?.profile?.dailyReminder?.time || "20:00"
+                        : "Off"}
+                    </strong>
+                  </div>
+                  {onOpenReminderModal && (
+                    <button
+                      type="button"
+                      onClick={onOpenReminderModal}
+                      className="px-3 py-1 rounded-xl bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] text-xs font-semibold border border-[#38322D] transition-colors cursor-pointer"
+                    >
+                      Configure
+                    </button>
+                  )}
                 </div>
               </div>
 
-              {/* Right 5 Cols: Selected Date Detailed Agenda */}
-              <div className="lg:col-span-5 space-y-4">
-                <div className="p-4 sm:p-5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between">
-                  <div>
-                    <span className="text-[11px] font-semibold text-[#C89B3C] uppercase tracking-wider">
-                      Selected Day Agenda
-                    </span>
-                    <h4 className="text-base font-serif font-bold text-[#F3EFE8]">
-                      {selectedDay.toLocaleDateString(undefined, {
-                        weekday: "short",
-                        month: "short",
-                        day: "numeric",
-                        year: "numeric",
-                      })}
-                    </h4>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Left 7 Cols: Monthly Calendar Grid */}
+                <div className="lg:col-span-7 space-y-4">
+                  {/* Month Navigator */}
+                  <div className="flex items-center justify-between bg-[#171513] p-3 rounded-2xl border border-[#38322D]">
+                    <div className="flex items-center space-x-3">
+                      <h3 className="text-base sm:text-lg font-serif font-bold text-[#F3EFE8]">
+                        {MONTH_NAMES[currentDate.getMonth()]} {currentDate.getFullYear()}
+                      </h3>
+                      <button
+                        onClick={() => {
+                          const now = new Date();
+                          setCurrentDate(now);
+                          setSelectedDay(now);
+                        }}
+                        className="px-2 py-0.5 rounded-md bg-[#2c2723] border border-[#38322D] text-[11px] font-medium text-[#B7AFA7] hover:text-[#F3EFE8] cursor-pointer"
+                      >
+                        Today
+                      </button>
+                    </div>
+
+                    <div className="flex items-center space-x-1">
+                      <button
+                        onClick={() => {
+                          setCurrentDate(
+                            new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1)
+                          );
+                        }}
+                        className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+                        title="Previous Month"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setCurrentDate(
+                            new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1)
+                          );
+                        }}
+                        className="p-1.5 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#2c2723] transition-colors cursor-pointer"
+                        title="Next Month"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
 
-                  <button
-                    onClick={() => {
-                      setNewStartDate(selectedDay.toISOString().split("T")[0]);
-                      setActiveTab("create");
-                    }}
-                    className="p-2 rounded-xl bg-[#2c2723] hover:bg-[#38322D] border border-[#38322D] text-[#C89B3C] transition-colors cursor-pointer"
-                    title="Add event on this day"
-                  >
-                    <Plus className="w-4 h-4" />
-                  </button>
+                  {/* Days of Week Headers */}
+                  <div className="grid grid-cols-7 gap-1 text-center text-xs font-semibold text-[#B7AFA7] py-1">
+                    {DAYS_OF_WEEK.map((d) => (
+                      <div key={d}>{d}</div>
+                    ))}
+                  </div>
+
+                  {/* 35/42 Days Grid */}
+                  <div className="grid grid-cols-7 gap-1">
+                    {calendarDays.map((dayItem, idx) => {
+                      const isSelected = isSameDay(dayItem.date, selectedDay);
+                      const isToday = isSameDay(dayItem.date, new Date());
+
+                      // Find events for this cell
+                      const dayStr = `${dayItem.date.getFullYear()}-${String(dayItem.date.getMonth() + 1).padStart(2, "0")}-${String(dayItem.date.getDate()).padStart(2, "0")}`;
+                      const dayEvts = events.filter((e) => {
+                        const start = e.start.dateTime || e.start.date || "";
+                        return start.startsWith(dayStr);
+                      });
+
+                      const dayCheckIn = checkInsMap[dayStr];
+                      const isPastOrToday = dayItem.date <= new Date();
+
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => setSelectedDay(dayItem.date)}
+                          className={`min-h-[68px] sm:min-h-[82px] p-1.5 rounded-xl border text-left flex flex-col justify-between transition-all cursor-pointer ${
+                            isSelected
+                              ? "bg-[#2c2723] border-[#C89B3C] shadow-md ring-1 ring-[#C89B3C]"
+                              : dayItem.isCurrentMonth
+                              ? "bg-[#171513] border-[#38322D] hover:border-[#B7AFA7]/60"
+                              : "bg-[#171513]/40 border-[#38322D]/40 opacity-40 hover:opacity-70"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between w-full">
+                            <span
+                              className={`text-xs font-bold w-5 h-5 flex items-center justify-center rounded-full ${
+                                isToday
+                                  ? "bg-[#C89B3C] text-[#171513]"
+                                  : isSelected
+                                  ? "text-[#C89B3C]"
+                                  : dayItem.isCurrentMonth
+                                  ? "text-[#F3EFE8]"
+                                  : "text-[#B7AFA7]"
+                              }`}
+                            >
+                              {dayItem.date.getDate()}
+                            </span>
+
+                            {dayEvts.length > 0 && (
+                              <span className="text-[9px] px-1 rounded bg-[#38322D] text-[#B7AFA7] font-mono">
+                                {dayEvts.length}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Check-In Status Indicator on Cell */}
+                          <div className="w-full">
+                            {dayCheckIn ? (
+                              <div
+                                title={`Checked in: ${dayCheckIn.mood}, Energy: ${dayCheckIn.energy}/5, Stress: ${dayCheckIn.stress}/5`}
+                                className="flex items-center gap-1 text-[9px] font-semibold text-emerald-400 bg-emerald-950/70 border border-emerald-800/60 px-1.5 py-0.5 rounded-md leading-none shadow-xs mt-0.5"
+                              >
+                                <Check className="w-2.5 h-2.5 text-emerald-400 shrink-0" />
+                                <span>{MOOD_EMOJIS[dayCheckIn.mood] || "🌿"}</span>
+                                <span className="hidden sm:inline capitalize truncate">{dayCheckIn.mood}</span>
+                              </div>
+                            ) : isPastOrToday && dayItem.isCurrentMonth ? (
+                              <div
+                                title="Hasn't checked in yet"
+                                className="text-[8px] sm:text-[9px] text-[#7A746E] flex items-center gap-1 px-1 py-0.5 mt-0.5"
+                              >
+                                <span className="w-1.5 h-1.5 rounded-full bg-[#38322D]"></span>
+                                <span className="hidden sm:inline text-[9px]">Unlogged</span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {/* Tiny Event Pills */}
+                          <div className="w-full space-y-0.5 overflow-hidden">
+                            {dayEvts.slice(0, 1).map((ev) => (
+                              <div
+                                key={ev.id}
+                                className="text-[9px] truncate px-1 py-0.5 rounded bg-[#C89B3C]/10 text-[#C89B3C] leading-none"
+                              >
+                                {ev.summary}
+                              </div>
+                            ))}
+                            {dayEvts.length > 1 && (
+                              <div className="text-[8px] text-[#B7AFA7] text-right">
+                                +{dayEvts.length - 1} more
+                              </div>
+                            )}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+
+                {/* Right 5 Cols: Selected Date Detailed Agenda & Check-In Card */}
+                <div className="lg:col-span-5 space-y-4">
+                  <div className="p-4 sm:p-5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between">
+                    <div>
+                      <span className="text-[11px] font-semibold text-[#C89B3C] uppercase tracking-wider">
+                        Selected Day Agenda
+                      </span>
+                      <h4 className="text-base font-serif font-bold text-[#F3EFE8]">
+                        {selectedDay.toLocaleDateString(undefined, {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </h4>
+                    </div>
+
+                    <button
+                      onClick={() => {
+                        setNewStartDate(selectedDay.toISOString().split("T")[0]);
+                        setActiveTab("create");
+                      }}
+                      className="p-2 rounded-xl bg-[#2c2723] hover:bg-[#38322D] border border-[#38322D] text-[#C89B3C] transition-colors cursor-pointer"
+                      title="Add event on this day"
+                    >
+                      <Plus className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Selected Date Check-In Status Card */}
+                  <div className="p-4 rounded-2xl bg-[#171513] border border-[#38322D] space-y-3 shadow-xs">
+                    <div className="flex items-center justify-between pb-2 border-b border-[#2C2723]">
+                      <span className="text-xs font-semibold text-[#C89B3C] uppercase tracking-wider flex items-center gap-1.5">
+                        <Smile className="w-3.5 h-3.5" />
+                        Check-In for this Date
+                      </span>
+                      {selectedDayCheckIn ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300 bg-emerald-950/60 border border-emerald-800/60 px-2.5 py-0.5 rounded-full">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                          Already Checked In
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-medium text-[#A69E95] bg-[#2C2723] px-2.5 py-0.5 rounded-full border border-[#38322D]">
+                          <Circle className="w-3 h-3 text-[#7A746E]" />
+                          Hasn't Checked In
+                        </span>
+                      )}
+                    </div>
+
+                    {selectedDayCheckIn ? (
+                      <div className="space-y-2.5">
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="p-2 rounded-xl bg-[#211E1B] border border-[#38322D] text-center">
+                            <span className="text-xl block">{MOOD_EMOJIS[selectedDayCheckIn.mood] || "🌿"}</span>
+                            <span className="text-[10px] text-[#A69E95] uppercase block">Mood</span>
+                            <span className="text-xs font-bold text-[#F3EFE8] capitalize truncate block">
+                              {selectedDayCheckIn.mood}
+                            </span>
+                          </div>
+                          <div className="p-2 rounded-xl bg-[#211E1B] border border-[#38322D] text-center">
+                            <span className="text-base font-bold text-[#C89B3C] block mt-0.5">⚡</span>
+                            <span className="text-[10px] text-[#A69E95] uppercase block">Energy</span>
+                            <span className="text-xs font-bold text-[#F3EFE8] block">{selectedDayCheckIn.energy} / 5</span>
+                          </div>
+                          <div className="p-2 rounded-xl bg-[#211E1B] border border-[#38322D] text-center">
+                            <span className="text-base font-bold text-[#738F85] block mt-0.5">🍃</span>
+                            <span className="text-[10px] text-[#A69E95] uppercase block">Stress</span>
+                            <span className="text-xs font-bold text-[#F3EFE8] block">{selectedDayCheckIn.stress} / 5</span>
+                          </div>
+                        </div>
+
+                        {selectedDayCheckIn.notes && (
+                          <p className="text-xs text-[#D8D2C9] italic bg-[#211E1B] p-2.5 rounded-xl border border-[#38322D]">
+                            "{selectedDayCheckIn.notes}"
+                          </p>
+                        )}
+
+                        {onSaveCheckIn && (
+                          <div className="flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenInlineCheckIn(selectedDayStr)}
+                              className="px-3 py-1 rounded-xl bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] text-xs font-semibold border border-[#38322D] transition-colors cursor-pointer flex items-center gap-1"
+                            >
+                              <Edit3 className="w-3 h-3" />
+                              <span>Edit Check-In</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="space-y-3 py-1">
+                        <p className="text-xs text-[#A69E95]">
+                          No wellness check-in was recorded for {selectedDayStr}.
+                        </p>
+                        {onSaveCheckIn && (
+                          <button
+                            type="button"
+                            onClick={() => handleOpenInlineCheckIn(selectedDayStr)}
+                            className="w-full py-2 rounded-xl bg-[#2C2723] hover:bg-[#38322D] text-[#C89B3C] text-xs font-semibold border border-[#38322D] transition-colors cursor-pointer flex items-center justify-center gap-1.5"
+                          >
+                            <Smile className="w-3.5 h-3.5" />
+                            <span>Record Check-In for this Date</span>
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Inline Form for Selected Day */}
+                    {isCheckingInDate === selectedDayStr && (
+                      <form onSubmit={handleSaveInlineCheckIn} className="p-3 rounded-xl bg-[#1C1A17] border border-[#C89B3C]/40 space-y-3 animate-fade-in mt-2">
+                        <div className="flex items-center justify-between pb-1 border-b border-[#2C2723]">
+                          <span className="text-xs font-bold text-[#C89B3C]">
+                            Log Check-In ({selectedDayStr})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setIsCheckingInDate(null)}
+                            className="text-[#A69E95] hover:text-[#F3EFE8] cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        {/* Mood options */}
+                        <div className="grid grid-cols-4 gap-1">
+                          {MOOD_OPTIONS.map((m) => (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => setCheckInMood(m.id)}
+                              className={`p-1.5 rounded-lg border text-center transition-all cursor-pointer ${
+                                checkInMood === m.id
+                                  ? "bg-[#C89B3C]/20 border-[#C89B3C] text-[#F3EFE8]"
+                                  : "bg-[#171513] border-[#38322D] text-[#A69E95] hover:text-[#F3EFE8]"
+                              }`}
+                            >
+                              <span className="text-base block">{m.icon}</span>
+                              <span className="text-[9px] capitalize block truncate">{m.label}</span>
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Sliders */}
+                        <div className="grid grid-cols-2 gap-2 text-xs">
+                          <div>
+                            <span className="text-[#A69E95] text-[10px]">Energy: {checkInEnergy}/5</span>
+                            <input
+                              type="range"
+                              min="1"
+                              max="5"
+                              value={checkInEnergy}
+                              onChange={(e) => setCheckInEnergy(Number(e.target.value))}
+                              className="w-full accent-[#C89B3C] cursor-pointer"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[#A69E95] text-[10px]">Stress: {checkInStress}/5</span>
+                            <input
+                              type="range"
+                              min="1"
+                              max="5"
+                              value={checkInStress}
+                              onChange={(e) => setCheckInStress(Number(e.target.value))}
+                              className="w-full accent-[#738F85] cursor-pointer"
+                            />
+                          </div>
+                        </div>
+
+                        <input
+                          type="text"
+                          placeholder="Optional notes or reflection..."
+                          value={checkInNotes}
+                          onChange={(e) => setCheckInNotes(e.target.value)}
+                          className="w-full px-2.5 py-1.5 rounded-lg bg-[#171513] border border-[#38322D] text-xs text-[#F3EFE8] outline-none"
+                        />
+
+                        <div className="flex justify-end gap-2 pt-1">
+                          <button
+                            type="button"
+                            onClick={() => setIsCheckingInDate(null)}
+                            className="px-2.5 py-1 text-xs text-[#A69E95] hover:text-[#F3EFE8] cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="px-3 py-1 rounded-lg bg-[#C89B3C] hover:bg-[#B58A32] text-[#171513] text-xs font-bold cursor-pointer"
+                          >
+                            Save
+                          </button>
+                        </div>
+                      </form>
+                    )}
+                  </div>
 
                 {/* Selected Day Events List */}
                 <div className="space-y-2.5 max-h-[420px] overflow-y-auto pr-1">
@@ -1095,7 +1741,8 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
                 </div>
               </div>
             </div>
-          )}
+          </div>
+        )}
 
           {/* TAB 3: CREATE NEW EVENT OR REMINDER */}
           {activeTab === "create" && (

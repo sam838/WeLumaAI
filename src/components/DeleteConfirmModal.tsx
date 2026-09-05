@@ -9,7 +9,8 @@ interface DeleteConfirmModalProps {
   itemName?: string;
   confirmLabel?: string;
   onConfirm: () => void;
-  onClose: () => void;
+  onClose?: () => void;
+  onCancel?: () => void;
 }
 
 export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
@@ -20,8 +21,10 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
   confirmLabel = "Delete Forever",
   onConfirm,
   onClose,
+  onCancel,
 }) => {
   if (!isOpen) return null;
+  const handleClose = onClose || onCancel || (() => {});
 
   return (
     <AnimatePresence>
@@ -47,7 +50,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
               </div>
             </div>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-1 rounded-lg text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513] cursor-pointer"
               aria-label="Cancel modal"
             >
@@ -68,7 +71,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
           <div className="pt-2 flex items-center justify-end space-x-2.5">
             <button
               type="button"
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 rounded-xl text-xs font-medium text-[#B7AFA7] hover:text-[#F3EFE8] hover:bg-[#171513] border border-[#38322D] transition-colors cursor-pointer"
             >
               Cancel
@@ -78,7 +81,7 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
               type="button"
               onClick={() => {
                 onConfirm();
-                onClose();
+                handleClose();
               }}
               className="flex items-center space-x-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-[#B86B6B] hover:bg-[#a35b5b] text-white transition-colors cursor-pointer shadow-sm"
             >

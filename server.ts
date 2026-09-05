@@ -4,6 +4,7 @@ import dotenv from "dotenv";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import { getGeminiApiKey, getSecretStatus, invalidateSecretCache } from "./src/server/secretManager";
+import { searchNearbyPlaces, getMapsApiKey, GMP_SOLUTION_ID } from "./src/server/mapsService";
 
 dotenv.config();
 
@@ -31,22 +32,37 @@ async function getGeminiClient(): Promise<GoogleGenAI> {
   return genAIClient;
 }
 
-// Directive 7: Centralized Model Tier Configuration
+// Directive 7 & Directive 12: Centralized Mode-Specific Model Tier Configuration
 export const AI_TIERS = {
   lite: {
+    name: "Quick Check-In",
+    displayName: "Quick Mode",
+    modelLabel: "gemini-3.1-flash-lite",
     primary: "gemini-3.1-flash-lite",
-    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
-    maxOutputTokens: 250,
+    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-flash-latest"],
+    maxOutputTokens: 1500,
+    temperature: 0.4,
+    description: "Ultra-low latency, fast journal capture & emotional acknowledgment without forced follow-up questions.",
   },
   standard: {
-    primary: "gemini-3.1-flash-lite",
-    fallbackLadder: ["gemini-3.1-flash-lite", "gemini-3.8-flash"],
-    maxOutputTokens: 700,
+    name: "Mindful Reflection",
+    displayName: "Reflect Mode",
+    modelLabel: "gemini-3.8-flash",
+    primary: "gemini-3.8-flash",
+    fallbackLadder: ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.1-flash-lite", "gemini-flash-latest"],
+    maxOutputTokens: 3500,
+    temperature: 0.7,
+    description: "Empathetic cognitive reframing, emotional exploration, and at most one thoughtful follow-up inquiry.",
   },
   reasoning: {
-    primary: "gemini-3.8-flash",
-    fallbackLadder: ["gemini-3.8-flash", "gemini-3.1-flash-lite"],
-    maxOutputTokens: 1600,
+    name: "Deep Reasoning",
+    displayName: "Deep Mode",
+    modelLabel: "gemini-3.7-flash",
+    primary: "gemini-3.7-flash",
+    fallbackLadder: ["gemini-3.7-flash", "gemini-3.1-pro-preview", "gemini-3.8-flash", "gemini-3.1-flash-lite"],
+    maxOutputTokens: 5000,
+    temperature: 0.6,
+    description: "Multi-factor cognitive reasoning, longitudinal pattern synthesis across entries, routines, and calendar.",
   },
 };
 
@@ -67,6 +83,7 @@ async function generateContentForTier(
     contents: any;
     systemInstruction?: string;
     maxOutputTokens?: number;
+    temperature?: number;
   }
 ): Promise<GenerateFallbackResult> {
   const tierConfig = AI_TIERS[tierName] || AI_TIERS.standard;
@@ -79,14 +96,29 @@ async function generateContentForTier(
     if (i > 0) fallbackUsed = true;
 
     try {
+      const configObj: any = {
+        systemInstruction: options.systemInstruction,
+        maxOutputTokens: options.maxOutputTokens || tierConfig.maxOutputTokens,
+        temperature: typeof options.temperature === "number" ? options.temperature : tierConfig.temperature,
+      };
+
+      // Ensure thinking tokens do not deplete the generation budget
+      if (tierName === "lite" || tierName === "standard") {
+        configObj.thinkingConfig = { thinkingBudget: 0 };
+      } else if (tierName === "reasoning") {
+        configObj.thinkingConfig = { thinkingBudget: 1024 };
+      }
+
       const response = await ai.models.generateContent({
         model: modelName,
         contents: options.contents,
-        config: {
-          systemInstruction: options.systemInstruction,
-          maxOutputTokens: options.maxOutputTokens || tierConfig.maxOutputTokens,
-        },
+        config: configObj,
       });
+
+      const candidate = response.candidates?.[0];
+      if (candidate?.finishReason && candidate.finishReason !== "STOP") {
+        console.warn(`[Gemini Generation] Model ${modelName} finishReason: ${candidate.finishReason}`);
+      }
 
       const responseText = response.text || "";
       if (responseText.trim().length > 0) {
@@ -151,9 +183,27 @@ async function startServer() {
         advice: secretInfo.remediationAdvice,
       },
       tiers: {
-        lite: AI_TIERS.lite.primary,
-        standard: AI_TIERS.standard.primary,
-        reasoning: AI_TIERS.reasoning.primary,
+        lite: {
+          mode: "quick",
+          name: AI_TIERS.lite.name,
+          model: AI_TIERS.lite.primary,
+          fallbackLadder: AI_TIERS.lite.fallbackLadder,
+          description: AI_TIERS.lite.description,
+        },
+        standard: {
+          mode: "reflect",
+          name: AI_TIERS.standard.name,
+          model: AI_TIERS.standard.primary,
+          fallbackLadder: AI_TIERS.standard.fallbackLadder,
+          description: AI_TIERS.standard.description,
+        },
+        reasoning: {
+          mode: "deep",
+          name: AI_TIERS.reasoning.name,
+          model: AI_TIERS.reasoning.primary,
+          fallbackLadder: AI_TIERS.reasoning.fallbackLadder,
+          description: AI_TIERS.reasoning.description,
+        },
       },
     });
   });
@@ -184,6 +234,7 @@ async function startServer() {
       ? payload.depth
       : "reflect") as "quick" | "reflect" | "deep";
     const history = Array.isArray(payload.history) ? payload.history : (Array.isArray(payload.recentHistory) ? payload.recentHistory : []);
+    const pastEntries = Array.isArray(payload.pastEntries) ? payload.pastEntries : [];
     const entryTitle = typeof payload.title === "string" ? payload.title.trim() : (typeof payload.entryTitle === "string" ? payload.entryTitle.trim() : "");
     const userProfile = payload.userProfile && typeof payload.userProfile === "object" ? payload.userProfile : null;
     const checkIn = payload.checkIn && typeof payload.checkIn === "object" ? payload.checkIn : (userProfile?.latestCheckIn || null);
@@ -285,9 +336,9 @@ async function startServer() {
 
       // Unified System Instruction with specialized lenses for all modes
       let systemPrompt =
-        "You are an empathetic, insightful journaling companion, cognitive reflection guide, and intelligent wellbeing scheduling assistant. " +
+        "You are an empathetic, insightful journaling companion, cognitive reflection guide, and intelligent wellbeing conversational partner. " +
         "You have full access to the user's ongoing journal session context. " +
-        "Help the user unpack thoughts, observe patterns, foster self-awareness, recommend restorative activities, and assist with scheduling.";
+        "You are capable of genuine, warm, natural conversation, empathetic listening, cognitive reframing, exploring ideas together, and—when explicitly asked—recommending restorative activities and assisting with scheduling.";
 
       systemPrompt += `\n\nCURRENT LOCATION, DATE, TIME & SCHEDULING CONTEXT:
 - Current Reference Date/Time: Today is ${dayOfWeek}, ${fullDateFormatted} at ${timeFormatted} (Timezone: ${clientTimezone}, ISO: ${isoDateOnly}).
@@ -391,40 +442,79 @@ async function startServer() {
       // Mandatory Preference & Check-In Grounding Directive
       systemPrompt +=
         "\n\nMANDATORY PERSONALIZATION & CHECK-IN GROUNDING DIRECTIVE:" +
-        "\nEvery single answer, cognitive reflection, conversational response, and suggested activity must be deliberately shaped by the user's recorded daily check-in (mood, energy, stress, check-in notes) AND their recorded user preferences (goals, grounding activities, stored preferences, social style, and schedule)." +
-        "\n1. Match Energy & Stress: Acknowledge or gently align with their current emotional state. If their energy is low (1-2) or stress is high (4-5), keep your tone calm, soothing, and supportive. Recommend gentle, low-friction grounding practices (e.g. 5-min breathwork, listening to soothing music, light stretching) rather than demanding workouts or tasks." +
-        "\n2. Respect Interests & Grounding Preferences: When suggesting routines, activities, or reflections, actively draw from what the user explicitly enjoys (e.g. favorite grounding activities, sports, hobbies, or spiritual practices from their profile)." +
-        "\n3. Transparent Relevance: Where relevant, naturally mention why a suggestion fits their current state and preferences (e.g. 'Since you checked in with moderate energy today and prefer outdoor morning moments, a brief walk could restore your focus').";
+        "\nEvery answer, reflection, and conversational response should be mindfully aware of the user's recorded daily check-in (mood, energy, stress, check-in notes) AND their preferences (goals, grounding interests, social style, and schedule)." +
+        "\n1. Match Energy & Stress: Acknowledge or gently align with their current emotional state. If their energy is low (1-2) or stress is high (4-5), keep your tone calm, soothing, and supportive." +
+        "\n2. Respect Interests & Grounding Preferences: When suggesting routines, activities, or reflections (if requested), actively draw from what the user explicitly enjoys (e.g. favorite grounding activities, sports, hobbies, or spiritual practices from their profile)." +
+        "\n3. Transparent Relevance: Where relevant, naturally mention why a suggestion fits their current state and preferences.";
 
-      // Depth tuning
+      // Directive on Natural Conversation & Non-Forced Recommendations
+      systemPrompt +=
+        "\n\nNATURAL CONVERSATION & NON-FORCED RECOMMENDATION POLICY (HIGHEST PRIORITY):" +
+        "\n- NO FORCED ACTIVITY RECOMMENDATIONS: You DO NOT have to recommend creating activities, habits, routines, or calendar events in every interaction. The user wants to be able to talk freely, share thoughts, and have authentic, natural, human conversations with you." +
+        "\n- NATURAL LISTENING & DIALOGUE: If the user is asking a question, venting, reflecting, sharing how their day was, exploring a concept, or just chatting, respond with genuine conversational presence—listen, validate, share perspectives, discuss ideas, and converse naturally. DO NOT tack on unsolicited activity recommendations or assign tasks." +
+        "\n- WHEN TO RECOMMEND ACTIVITIES: ONLY provide concrete activity recommendations or calendar scheduling proposals when the user EXPLICITLY asks for them (e.g., 'what should I do?', 'can you recommend something for me?', 'suggest some activities', 'help me plan', 'what routines should I try?') or when the user selected 'brainstorm' mode." +
+        "\n- CONVERSATIONAL INTEGRITY: Feel free to chat casually, joke gently, ask curious follow-up thoughts, discuss books, work, philosophy, or personal stories without turning everything into a wellness prescription.";
+
+      // Directive 12: Interaction Modes (Quick, Reflect, Deep) Behavioral Differentiation
       if (depth === "quick") {
         systemPrompt +=
-          "\n- DEPTH: QUICK. Provide a concise, clear, and direct response (1-2 short paragraphs) with maximum 1 clarifying question.";
+          "\n\n=======================================================" +
+          "\nINTERACTION MODE: QUICK CHECK-IN (Optimized for gemini-3.1-flash-lite)" +
+          "\n=======================================================" +
+          "\n- MISSION: Fast journal capture, natural conversational acknowledgment, and emotional validation with ultra-low latency." +
+          "\n- LENGTH & FORMAT: 1 single short paragraph (maximum 2-3 sentences)." +
+          "\n- RESPONSE BEHAVIOR: Warmly acknowledge the user's feelings and offer at most ONE reassuring, grounding observation." +
+          "\n- STRICT CONSTRAINT: ABSOLUTELY NO FORCED QUESTIONS. Do NOT ask open-ended or follow-up questions unless the user asked a question. Respect the user's intent to deposit thoughts quickly without conversational burden." +
+          "\n- Do not force activity recommendations.";
       } else if (depth === "deep") {
         systemPrompt +=
-          "\n- DEPTH: DEEP. Provide thorough introspection, examine underlying assumptions, explore cognitive patterns, and suggest actionable pathways forward.";
+          "\n\n=======================================================" +
+          "\nINTERACTION MODE: DEEP REASONING & PATTERN SYNTHESIS (Optimized for gemini-3.7-flash)" +
+          "\n=======================================================" +
+          "\n- MISSION: Multi-factor cognitive analysis, longitudinal pattern synthesis, holistic habit alignment, and deep conversation." +
+          "\n- MULTI-FACTOR REASONING: Analyze how the user's mood, stress, energy, sleep, routines, calendar demands, and interpersonal connections interact." +
+          "\n- PATTERN SYNTHESIS: Examine underlying beliefs, recurring triggers, or energizers across time. Clearly distinguish correlation from causation." +
+          "\n- NON-CLINICAL GUARANTEE: Never make diagnostic or psychiatric declarations. Keep observations grounded in lifestyle, mindfulness, and healthy routines." +
+          "\n- STRUCTURED RESPONSE: Provide a rich, structured reflection or conversation addressing what is really going on beneath the words.";
+
+        // Longitudinal Context Injection: Include past entries for multi-factor pattern synthesis
+        if (pastEntries.length > 0) {
+          systemPrompt += "\n\nHISTORICAL JOURNAL ENTRIES CONTEXT (FOR LONGITUDINAL PATTERN ANALYSIS):";
+          pastEntries.slice(0, 5).forEach((item: any, idx: number) => {
+            systemPrompt += `\n- [Past Reflection ${idx + 1}] Date: ${item.date || "Past"}, Title: "${item.title || "Untitled"}", Mood: ${item.mood || "reflective"}, Summary: "${item.summary || item.snippet || ""}"`;
+            if (Array.isArray(item.themes) && item.themes.length > 0) {
+              systemPrompt += ` | Themes: ${item.themes.join(", ")}`;
+            }
+          });
+        }
       } else {
         systemPrompt +=
-          "\n- DEPTH: REFLECT. Provide balanced, thoughtful reflection with 1-2 probing yet gentle questions.";
+          "\n\n=======================================================" +
+          "\nINTERACTION MODE: MINDFUL REFLECTION (Optimized for gemini-3.8-flash)" +
+          "\n=======================================================" +
+          "\n- MISSION: Empathetic sounding board, natural conversation partner, cognitive reframing, and emotional processing." +
+          "\n- LENGTH & FORMAT: 2-3 balanced, thoughtful paragraphs with natural conversational cadence." +
+          "\n- RESPONSE BEHAVIOR: Validate emotions with genuine empathy, unpack underlying motivations, and converse naturally." +
+          "\n- THOUGHTFUL INQUIRY: Ask at most ONE thoughtful question if appropriate for natural dialogue—do not interrogate.";
       }
 
       // Mode lens (Reflection, Summary, Brainstorm, Dialogue/Chat)
       if (style === "summary") {
         systemPrompt +=
-          "\n- MODE: SUMMARY. Synthesize the core takeaways, emotional currents, decisions, and thematic highlights from the conversation into an elegant, structured summary with key takeaways and actionable reflections.";
+          "\n- ACTIVE STYLE: SUMMARY. Synthesize the core takeaways, emotional currents, decisions, and thematic highlights from the conversation into an elegant, structured summary with key takeaways and actionable reflections.";
       } else if (style === "brainstorm") {
         systemPrompt +=
-          "\n- MODE: BRAINSTORM. Generate creative ideas, practical wellbeing experiments, next small steps, and fresh perspectives directly rooted in the user's situation. If the user asks about activities or routines, provide insightful, realistic, grounded suggestions.";
+          "\n- ACTIVE STYLE: BRAINSTORM. Generate creative ideas, practical experiments, next small steps, and fresh perspectives directly rooted in the user's situation. If the user asks about activities or routines, provide insightful, realistic, grounded suggestions.";
       } else if (style === "chat") {
         systemPrompt +=
-          "\n- MODE: DIALOGUE. Engage as an attentive, curious, empathetic conversation partner. Directly respond to the latest point while staying grounded in previous reflections.";
+          "\n- ACTIVE STYLE: CHAT & NATURAL CONVERSATION. You are engaging in an authentic, natural, friendly conversation. Converse normally, listen attentively, reply directly to what they shared, share thoughts and questions naturally. STRICT RULE: DO NOT recommend creating activities, scheduling events, or doing exercises unless the user explicitly asked for recommendations!";
       } else {
         systemPrompt +=
-          "\n- MODE: REFLECTION. Validate emotions, offer gentle cognitive reframing, examine root feelings, and highlight personal growth opportunities. If the user asks for recommendations or what to do, provide mindful, empowering activity ideas.";
+          "\n- ACTIVE STYLE: REFLECTION. Validate emotions, offer gentle cognitive reframing, examine root feelings, and converse naturally. Do NOT force activity recommendations unless explicitly requested by the user.";
       }
 
       systemPrompt +=
-        "\n\nACTIVITY RECOMMENDATIONS & CALENDAR SCHEDULING NOTE: If the user asks for activity recommendations, ideas on what to do, habits, workouts, mindfulness, or routines, make sure your response offers clear, inspiring options. Highlight the benefits, realistic duration (e.g. 15-60 mins), and calculated timing.";
+        "\n\nACTIVITY RECOMMENDATIONS & CALENDAR SCHEDULING NOTE: ONLY if the user explicitly asks for activity recommendations, things to do, habits, workouts, mindfulness, or routines, provide clear, inspiring options with benefits and realistic duration (e.g. 15-60 mins). Otherwise, engage in natural conversation and reflection.";
 
       // Execute generation with selected tier and fallback ladder
       const result = await generateContentForTier(ai, tierName, {
@@ -457,7 +547,9 @@ async function startServer() {
           `Analyze this journal conversation and response:\n"""\n${sampleForAnalysis}\n"""\n\n` +
           `Reference Date Context: Today is ${dayOfWeek}, ${fullDateFormatted} (ISO Date: ${isoDateOnly}, Time: ${timeFormatted}, Timezone: ${clientTimezone}).\n\n` +
           `Task 1: Extract a 1-sentence essence summary, 2-4 themes, and emotional tone.\n` +
-          `Task 2: If the text includes any recommended activities, brainstormed ideas, habits, or actionable suggestions for the user (e.g. badminton, nature walk, 10-min meditation, journaling, stretching, calling a friend), extract 1 to 3 structured activity objects suitable for Google Calendar scheduling. If none are recommended or relevant, return empty array [].\n` +
+          `Task 2 (Strict Intent Check for Actionable Activities): Did the user explicitly ask for activity recommendations, things to do, habits, routines, or calendar planning (e.g. "what should I do?", "recommend an activity", "suggest some ideas", "help me plan", "can you recommend routines?"), AND did the response provide concrete scheduled activities?\n` +
+          `- If NO (the user was just having a natural conversation, chatting, venting, reflecting, or did not explicitly ask for activities): You MUST return an empty array [] for "suggestedActivities". DO NOT convert casual conversational remarks, words of encouragement, or general concepts into calendar activities!\n` +
+          `- If YES: Extract 1 to 3 structured activity objects suitable for Google Calendar scheduling.\n` +
           `For each activity, calculate targetDate (YYYY-MM-DD), targetTime (24-hr HH:mm), and targetDateTimeISO relative to today (${fullDateFormatted}). For example: if user mentioned "Sunday 10.00 am" and today is Tuesday 2026-09-01, targetDate is the upcoming Sunday "2026-09-06" and targetTime is "10:00".\n` +
           `If the user's requested date was ambiguous or unspecified, set "needsDateClarification": true.\n\n` +
           `Return ONLY a valid JSON object matching this schema with no markdown formatting:\n` +
@@ -469,7 +561,7 @@ async function startServer() {
           `  "sentiment": "positive|neutral|negative|mixed",\n` +
           `  "suggestedActivities": [\n` +
           `    {\n` +
-          `      "title": "Clear Activity Name (e.g. Sunday Morning Badminton)",\n` +
+          `      "title": "Clear Activity Name (e.g. Swimming Session at East Surabaya Pool)",\n` +
           `      "description": "Short inspiring description of the activity and mindful focus",\n` +
           `      "durationMinutes": 60,\n` +
           `      "domain": "mind|body|life|connection",\n` +
@@ -478,7 +570,8 @@ async function startServer() {
           `      "targetTime": "10:00",\n` +
           `      "targetDateTimeISO": "2026-09-06T10:00:00",\n` +
           `      "reason": "Why this specifically fits their reflection and needs",\n` +
-          `      "needsDateClarification": false\n` +
+          `      "needsDateClarification": false,\n` +
+          `      "venueQuery": "swimming pool (or badminton court / gym / park if applicable, otherwise empty string)"\n` +
           `    }\n` +
           `  ]\n` +
           `}`;
@@ -486,7 +579,7 @@ async function startServer() {
         const metaResult = await generateContentForTier(ai, "lite", {
           contents: extractPrompt,
           systemInstruction: "You are a precise JSON metadata and activity extractor. Return raw JSON only.",
-          maxOutputTokens: 500,
+          maxOutputTokens: 600,
         });
 
         const cleanedJson = metaResult.text.replace(/```json|```/g, "").trim();
@@ -496,8 +589,21 @@ async function startServer() {
         if (parsed.primaryEmotion) analysis.primaryEmotion = parsed.primaryEmotion;
         if (typeof parsed.intensity === "number") analysis.intensity = parsed.intensity;
         if (parsed.sentiment) analysis.sentiment = parsed.sentiment;
-        if (Array.isArray(parsed.suggestedActivities)) {
-          suggestedActivities = parsed.suggestedActivities
+
+        // Determine if activity recommendations were actually requested or appropriate
+        const lowerPrompt = prompt.toLowerCase();
+        const isExplicitActivityRequest =
+          /recommend|suggest|what (should|can) i do|ideas (for|to)|schedule|calendar|activity|activities|routine|routines|workout|exercise|court|places to go|plan my/i.test(
+            lowerPrompt
+          );
+
+        // Allow activities ONLY if user asked, or in brainstorm mode
+        const shouldExtractActivities =
+          (isExplicitActivityRequest || style === "brainstorm") &&
+          style !== "summary";
+
+        if (shouldExtractActivities && Array.isArray(parsed.suggestedActivities) && parsed.suggestedActivities.length > 0) {
+          const rawActivities = parsed.suggestedActivities
             .filter((act: any) => act && typeof act.title === "string" && act.title.trim())
             .map((act: any, idx: number) => ({
               id: `sug_${Date.now()}_${idx}`,
@@ -511,11 +617,67 @@ async function startServer() {
               targetTime: typeof act.targetTime === "string" ? act.targetTime : undefined,
               targetDateTimeISO: typeof act.targetDateTimeISO === "string" ? act.targetDateTimeISO : undefined,
               needsDateClarification: !!act.needsDateClarification,
+              venueQuery: typeof act.venueQuery === "string" && act.venueQuery.trim() ? act.venueQuery.trim() : undefined,
             }));
+
+          // User location context for Google Places discovery
+          const userLocationName =
+            (payload.location && typeof payload.location === "string" && payload.location.trim()) ||
+            clientLocation?.city ||
+            userProfile?.city ||
+            "East Surabaya";
+          const userLatitude = clientLocation?.latitude;
+          const userLongitude = clientLocation?.longitude;
+
+          // Enrich activities that involve physical places with nearest 3-4 venues sorted by distance
+          for (const act of rawActivities) {
+            const lowerTitle = act.title.toLowerCase();
+            const lowerDesc = act.description.toLowerCase();
+            let queryToSearch = act.venueQuery;
+
+            if (!queryToSearch) {
+              if (lowerTitle.includes("swim") || lowerDesc.includes("swim") || lowerTitle.includes("pool") || lowerDesc.includes("renang")) {
+                queryToSearch = "swimming pool";
+              } else if (lowerTitle.includes("badminton") || lowerDesc.includes("badminton")) {
+                queryToSearch = "badminton court";
+              } else if (lowerTitle.includes("gym") || lowerDesc.includes("gym") || lowerTitle.includes("fitness") || lowerTitle.includes("workout")) {
+                queryToSearch = "gym fitness center";
+              } else if (lowerTitle.includes("park") || lowerDesc.includes("park") || lowerTitle.includes("stroll") || lowerTitle.includes("walk")) {
+                queryToSearch = "public park";
+              } else if (lowerTitle.includes("yoga") || lowerDesc.includes("yoga")) {
+                queryToSearch = "yoga studio";
+              }
+            }
+
+            if (queryToSearch) {
+              act.venueQuery = queryToSearch;
+              try {
+                const searchRes = await searchNearbyPlaces({
+                  query: queryToSearch,
+                  locationName: userLocationName,
+                  latitude: userLatitude,
+                  longitude: userLongitude,
+                  maxResults: 4,
+                });
+                act.recommendedPlaces = searchRes.places;
+                act.locationQueryUsed = searchRes.userLocation.address;
+                if (searchRes.places.length > 0) {
+                  act.selectedPlace = searchRes.places[0]; // Nearest venue by default
+                }
+              } catch (placesErr) {
+                console.warn("[Places Enrichment] Failed to find venues for activity:", placesErr);
+              }
+            }
+          }
+
+          suggestedActivities = rawActivities;
+        } else {
+          suggestedActivities = [];
         }
       } catch {
         summaryText = prompt.slice(0, 100) + (prompt.length > 100 ? "..." : "");
         themes = [style.charAt(0).toUpperCase() + style.slice(1)];
+        suggestedActivities = [];
       }
 
       // Operational usage metadata (Directive 7.10)
@@ -529,6 +691,9 @@ async function startServer() {
         analysis,
         suggestedActivities,
         modelUsed: result.modelUsed,
+        tier: tierName,
+        depth,
+        fallbackUsed: result.fallbackUsed,
         usage: {
           reflectionMode: depth,
           modelTier: tierName,
@@ -808,6 +973,55 @@ In each recommendation's 'reason' field, explicitly explain how that specific ac
       console.error("[Ask My Journal Inquiry Error]:", err);
       return res.status(500).json({
         error: err?.message || "Failed to process journal inquiry.",
+      });
+    }
+  });
+
+  // 2d. Google Maps Platform: Nearby Places Discovery & Status (Directive 20 & 21)
+  app.get("/api/maps/status", async (_req: Request, res: Response) => {
+    try {
+      const keyInfo = await getMapsApiKey();
+      return res.json({
+        configured: !!keyInfo.key,
+        source: keyInfo.source,
+        solutionId: GMP_SOLUTION_ID,
+        hint: !keyInfo.key
+          ? "No Maps API key detected. Set GOOGLE_MAPS_API_KEY or configure a Maps key."
+          : "Google Maps Platform operational.",
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err?.message || "Failed to check Maps status" });
+    }
+  });
+
+  app.post("/api/maps/places-search", async (req: Request, res: Response) => {
+    const payload = req.body && typeof req.body === "object" ? req.body : {};
+    const query = typeof payload.query === "string" ? payload.query.trim().slice(0, 150) : "";
+    const locationName = typeof payload.location === "string" ? payload.location.trim().slice(0, 150) : "East Surabaya";
+    const latitude = typeof payload.latitude === "number" && !isNaN(payload.latitude) ? payload.latitude : undefined;
+    const longitude = typeof payload.longitude === "number" && !isNaN(payload.longitude) ? payload.longitude : undefined;
+    const maxResults =
+      typeof payload.maxResults === "number" && payload.maxResults > 0 && payload.maxResults <= 10
+        ? payload.maxResults
+        : 4;
+
+    if (!query) {
+      return res.status(400).json({ error: "Missing required 'query' field." });
+    }
+
+    try {
+      const result = await searchNearbyPlaces({
+        query,
+        locationName,
+        latitude,
+        longitude,
+        maxResults,
+      });
+      return res.json(result);
+    } catch (err: any) {
+      console.error("[Maps Search API Error]:", err);
+      return res.status(500).json({
+        error: err?.message || "Failed to search nearby places.",
       });
     }
   });

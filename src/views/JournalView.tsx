@@ -32,6 +32,11 @@ import {
   Flame,
   ExternalLink,
   CalendarCheck,
+  MapPin,
+  Lightbulb,
+  FileText,
+  Maximize2,
+  Minimize2,
 } from "lucide-react";
 import {
   AuthUserState,
@@ -46,6 +51,7 @@ import {
 } from "../types";
 import { DeleteConfirmModal } from "../components/DeleteConfirmModal";
 import { ScheduleActivityModal } from "../components/ScheduleActivityModal";
+import { MarkdownRenderer } from "../components/MarkdownRenderer";
 import {
   parseActivityScheduleDateTime,
   formatHumanReadable,
@@ -104,7 +110,33 @@ const MOOD_OPTIONS: { id: MoodType; label: string; icon: string }[] = [
   { id: "drained", label: "Drained", icon: "🌙" },
 ];
 
+export const DEPTH_CONFIG: Record<ReflectionDepth, { label: string; model: string; badge: string; desc: string }> = {
+  quick: {
+    label: "Quick",
+    model: "gemini-3.1-flash-lite",
+    badge: "Flash-Lite",
+    desc: "Ultra-low latency check-in: 1 concise paragraph, zero forced questions.",
+  },
+  reflect: {
+    label: "Reflect",
+    model: "gemini-3.8-flash",
+    badge: "Flash",
+    desc: "Empathetic cognitive reframing & thoughtful inquiry.",
+  },
+  deep: {
+    label: "Deep",
+    model: "gemini-3.7-flash",
+    badge: "Reasoning",
+    desc: "Multi-factor cognitive synthesis & longitudinal pattern analysis across entries.",
+  },
+};
+
 const PROMPT_STARTERS = [
+  {
+    title: "Casual Chat & Free Thought",
+    text: "Hey! I just wanted to talk through what's on my mind today without needing any formal schedule or activity plan:",
+    tag: "Mind",
+  },
   {
     title: "Morning Clarity & Daily Intent",
     text: "Here is what is top of mind for me today, along with my main priority and how I feel:",
@@ -208,13 +240,24 @@ export const JournalView: React.FC<JournalViewProps> = ({
     entryTitle: "",
   });
 
+  const [expandReadingView, setExpandReadingView] = useState(false);
+  const [isHeaderCollapsed, setIsHeaderCollapsed] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const latestMessageRef = useRef<HTMLDivElement | null>(null);
+  const prevMsgCountRef = useRef(0);
 
-  // Auto-scroll to bottom of conversation
+  // Auto-scroll intelligently: when a new AI response arrives, scroll so the user sees the START of the response
   useEffect(() => {
-    if (activeEntry?.messages && activeEntry.messages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const currentLength = activeEntry?.messages?.length || 0;
+    if (currentLength > 0 && currentLength > prevMsgCountRef.current) {
+      const lastMsg = activeEntry?.messages?.[currentLength - 1];
+      if (lastMsg?.role === "model" && latestMessageRef.current) {
+        latestMessageRef.current.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      }
     }
+    prevMsgCountRef.current = currentLength;
   }, [activeEntry?.messages?.length, isGenerating]);
 
   // Sync state when active entry changes
@@ -273,6 +316,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
     endDate: Date;
     durationMinutes: number;
     reason?: string;
+    location?: string;
   }) => {
     const actKey = modalActivityState.actKey;
     if (!actKey) return;
@@ -303,7 +347,10 @@ export const JournalView: React.FC<JournalViewProps> = ({
         title: `🌱 ${params.title}`,
         description: `${params.description}\n\n• Why this fits: ${
           params.reason || "Mindful recommendation from your journal"
-        }\n• Recommended Duration: ${params.durationMinutes} mins\n• Wellbeing Domain: ${params.domain.toUpperCase()}`,
+        }\n• Recommended Duration: ${params.durationMinutes} mins\n• Wellbeing Domain: ${params.domain.toUpperCase()}${
+          params.location ? `\n• Location: ${params.location}` : ""
+        }`,
+        location: params.location,
         startTime: params.startDate.toISOString(),
         endTime: params.endDate.toISOString(),
         colorId,
@@ -462,18 +509,6 @@ export const JournalView: React.FC<JournalViewProps> = ({
           </div>
         </div>
       )}
-
-      {/* Mobile History Toggle Button */}
-      <div className="lg:hidden absolute top-3 left-3 z-30">
-        <button
-          id="mobile-history-drawer-btn"
-          onClick={() => setMobileHistoryOpen(!mobileHistoryOpen)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#211E1B]/95 backdrop-blur border border-[#38322D] text-xs font-medium text-[#F3EFE8] shadow-md active:scale-95 cursor-pointer"
-        >
-          <BookOpen className="w-3.5 h-3.5 text-[#C89B3C]" />
-          <span>Journal History ({interactions.length})</span>
-        </button>
-      </div>
 
       {/* LEFT: Journal Entries Sidebar (Warm Dark Themed) */}
       <aside
@@ -658,91 +693,227 @@ export const JournalView: React.FC<JournalViewProps> = ({
 
       {/* RIGHT: Active Conversational Journal Studio (Warm Dark Themed) */}
       <main className="flex-1 flex flex-col h-full overflow-hidden bg-[#171513]">
-        {/* Top Studio Bar */}
-        <header className="px-4 lg:px-6 py-3.5 bg-[#211E1B] border-b border-[#38322D] flex flex-wrap items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-3 flex-1 min-w-[200px]">
-            <input
-              id="reflection-title-input"
-              type="text"
-              placeholder="Session Title (e.g., Afternoon Focus & Reset)"
-              value={title}
-              onChange={(e) => {
-                setTitle(e.target.value);
-                if (onUpdateTitle && activeEntry) {
-                  onUpdateTitle(e.target.value);
-                }
-              }}
-              className="text-base lg:text-lg font-serif font-bold text-[#F3EFE8] placeholder-[#7A746E] bg-transparent focus:outline-none w-full border-b border-transparent focus:border-[#C89B3C] transition-colors pb-0.5"
-            />
-          </div>
-
-          <div className="flex items-center gap-2">
-            {/* Mode Selector (Reflection, Summary, Brainstorm, Chat) */}
-            <div className="hidden sm:flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs">
-              {(["reflection", "summary", "brainstorm", "chat"] as JournalMode[]).map((m) => (
-                <button
-                  key={m}
-                  onClick={() => {
-                    setMode(m);
-                    if (onUpdateMode && activeEntry) onUpdateMode(m);
-                  }}
-                  className={`px-3 py-1 rounded-lg capitalize font-semibold transition-all cursor-pointer ${
-                    mode === m
-                      ? "bg-[#292420] text-[#C89B3C] border border-[#38322D] shadow-xs"
-                      : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-                  }`}
-                >
-                  {m}
-                </button>
-              ))}
-            </div>
-
-            {/* Depth Selector (Quick, Reflect, Deep) */}
-            <div className="flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs">
-              {(["quick", "reflect", "deep"] as ReflectionDepth[]).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => {
-                    setDepth(d);
-                    if (onUpdateDepth && activeEntry) onUpdateDepth(d);
-                  }}
-                  className={`px-2.5 py-1 rounded-lg capitalize font-semibold transition-all cursor-pointer ${
-                    depth === d
-                      ? "bg-[#C89B3C] text-[#171513] shadow-xs"
-                      : "text-[#B7AFA7] hover:text-[#F3EFE8]"
-                  }`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-
-            {/* Calendar Shortcut */}
-            {onOpenCalendar && (
+        {/* Top Studio Bar (Collapsible) */}
+        {isHeaderCollapsed ? (
+          <div
+            id="collapsed-journal-header"
+            className="px-3 sm:px-4 lg:px-6 py-2 bg-[#211E1B] border-b border-[#38322D] flex items-center justify-between gap-2.5 shrink-0 animate-fade-in"
+          >
+            <div className="flex items-center gap-2 min-w-0 flex-1">
               <button
-                id="journal-calendar-shortcut-btn"
-                onClick={onOpenCalendar}
-                className="p-2 rounded-xl bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] hover:border-[#C89B3C] transition-colors border border-[#38322D] cursor-pointer"
-                title="Open Schedule & Calendar"
+                id="mobile-history-collapsed-btn"
+                onClick={() => setMobileHistoryOpen(!mobileHistoryOpen)}
+                className="lg:hidden flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#171513] border border-[#38322D] text-xs font-medium text-[#C89B3C] shadow-xs active:scale-95 cursor-pointer shrink-0"
+                title="Toggle journal history"
               >
-                <Calendar className="w-4 h-4" />
+                <BookOpen className="w-3.5 h-3.5" />
+                <span className="text-[11px]">({interactions.length})</span>
               </button>
-            )}
 
-            {/* Toggle Metadata Panel */}
-            <button
-              onClick={() => setShowDetailsPanel(!showDetailsPanel)}
-              className={`p-2 rounded-xl transition-colors border cursor-pointer ${
-                showDetailsPanel
-                  ? "bg-[#C89B3C]/20 text-[#C89B3C] border-[#C89B3C]"
-                  : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border-[#38322D]"
-              }`}
-              title="Toggle Mood & Tags Context"
-            >
-              <Sliders className="w-4 h-4" />
-            </button>
+              <div
+                onClick={() => setIsHeaderCollapsed(false)}
+                className="flex items-center gap-2 min-w-0 flex-1 cursor-pointer group"
+                title="Click to expand header controls"
+              >
+                <span className="text-xs sm:text-sm font-serif font-bold text-[#F3EFE8] truncate group-hover:text-[#C89B3C] transition-colors">
+                  {title.trim() || "Untitled Reflection"}
+                </span>
+                <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-[#171513] text-[#C89B3C] border border-[#38322D]">
+                    {mode}
+                  </span>
+                  <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded bg-[#171513] text-[#8C847B] border border-[#38322D]">
+                    {depth}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Focus Reading View Toggle */}
+              <button
+                id="collapsed-toggle-reading-view-btn"
+                onClick={() => setExpandReadingView(!expandReadingView)}
+                className={`p-1.5 rounded-xl transition-colors border cursor-pointer ${
+                  expandReadingView
+                    ? "bg-[#C89B3C]/20 text-[#C89B3C] border-[#C89B3C]"
+                    : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border-[#38322D]"
+                }`}
+                title={expandReadingView ? "Exit Focus Reading View" : "Enter Focus Reading View"}
+              >
+                {expandReadingView ? (
+                  <Minimize2 className="w-3.5 h-3.5" />
+                ) : (
+                  <Maximize2 className="w-3.5 h-3.5" />
+                )}
+              </button>
+
+              {/* Expand Header Button */}
+              <button
+                id="expand-header-btn"
+                onClick={() => setIsHeaderCollapsed(false)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-[#171513] text-[#C89B3C] hover:bg-[#2A2622] hover:border-[#C89B3C] transition-all border border-[#38322D] text-xs font-semibold cursor-pointer shadow-xs"
+                title="Expand Title & Controls Header"
+              >
+                <span className="hidden sm:inline">Controls</span>
+                <ChevronDown className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-        </header>
+        ) : (
+          <header className="px-3 sm:px-4 lg:px-6 py-3 bg-[#211E1B] border-b border-[#38322D] flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+            <div className="flex items-center gap-2.5 flex-1 min-w-[180px]">
+              <button
+                id="mobile-history-expanded-btn"
+                onClick={() => setMobileHistoryOpen(!mobileHistoryOpen)}
+                className="lg:hidden flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-[#171513] border border-[#38322D] text-xs font-medium text-[#C89B3C] shadow-xs active:scale-95 cursor-pointer shrink-0"
+                title="Toggle journal history"
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">History ({interactions.length})</span>
+                <span className="sm:hidden text-[11px]">({interactions.length})</span>
+              </button>
+
+              <input
+                id="reflection-title-input"
+                type="text"
+                placeholder="Session Title (e.g., Afternoon Focus & Reset)"
+                value={title}
+                onChange={(e) => {
+                  setTitle(e.target.value);
+                  if (onUpdateTitle && activeEntry) {
+                    onUpdateTitle(e.target.value);
+                  }
+                }}
+                className="text-base lg:text-lg font-serif font-bold text-[#F3EFE8] placeholder-[#7A746E] bg-transparent focus:outline-none w-full border-b border-transparent focus:border-[#C89B3C] transition-colors pb-0.5"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              {/* Mode Selector (Reflection, Chat, Brainstorm, Summary) */}
+              <div className="flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs overflow-x-auto no-scrollbar">
+                {(
+                  [
+                    { id: "reflection", label: "Reflect", icon: Sparkles },
+                    { id: "chat", label: "Chat", icon: MessageSquare },
+                    { id: "brainstorm", label: "Brainstorm", icon: Lightbulb },
+                    { id: "summary", label: "Summary", icon: FileText },
+                  ] as const
+                ).map(({ id, label, icon: Icon }) => (
+                  <button
+                    key={id}
+                    onClick={() => {
+                      setMode(id as JournalMode);
+                      if (onUpdateMode && activeEntry) onUpdateMode(id as JournalMode);
+                    }}
+                    title={
+                      id === "chat"
+                        ? "Natural Conversation: Talk freely without unsolicited activity recommendations"
+                        : id === "reflection"
+                        ? "Mindful Reflection: Cognitive reframing and emotional listening"
+                        : id === "brainstorm"
+                        ? "Brainstorming: Ideas, habits & routines"
+                        : "Summary: Structured takeaways & synthesis"
+                    }
+                    className={`flex items-center gap-1 px-2.5 sm:px-3 py-1 rounded-lg font-semibold transition-all cursor-pointer text-xs ${
+                      mode === id
+                        ? "bg-[#292420] text-[#C89B3C] border border-[#38322D] shadow-xs"
+                        : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                    }`}
+                  >
+                    <Icon className="w-3 h-3" />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Depth Selector (Quick, Reflect, Deep) */}
+              <div className="flex items-center bg-[#171513] p-1 rounded-xl border border-[#38322D] text-xs">
+                {(["quick", "reflect", "deep"] as ReflectionDepth[]).map((d) => {
+                  const isSelected = depth === d;
+                  const cfg = DEPTH_CONFIG[d];
+                  return (
+                    <button
+                      key={d}
+                      onClick={() => {
+                        setDepth(d);
+                        if (onUpdateDepth && activeEntry) onUpdateDepth(d);
+                      }}
+                      title={`${cfg.label} Mode (${cfg.model}): ${cfg.desc}`}
+                      className={`px-2.5 py-1 rounded-lg capitalize font-semibold transition-all cursor-pointer flex items-center gap-1.5 ${
+                        isSelected
+                          ? "bg-[#C89B3C] text-[#171513] shadow-xs"
+                          : "text-[#B7AFA7] hover:text-[#F3EFE8]"
+                      }`}
+                    >
+                      <span>{d}</span>
+                      <span
+                        className={`text-[9px] font-mono px-1 py-0.2 rounded font-normal hidden sm:inline ${
+                          isSelected ? "bg-[#171513]/25 text-[#171513]" : "bg-[#2A2622] text-[#8C847B]"
+                        }`}
+                      >
+                        {cfg.badge}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Calendar Shortcut */}
+              {onOpenCalendar && (
+                <button
+                  id="journal-calendar-shortcut-btn"
+                  onClick={onOpenCalendar}
+                  className="p-2 rounded-xl bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] hover:border-[#C89B3C] transition-colors border border-[#38322D] cursor-pointer"
+                  title="Open Schedule & Calendar"
+                >
+                  <Calendar className="w-4 h-4" />
+                </button>
+              )}
+
+              {/* Focus Reading View Toggle */}
+              <button
+                id="toggle-reading-view-btn"
+                onClick={() => setExpandReadingView(!expandReadingView)}
+                className={`p-2 rounded-xl transition-colors border cursor-pointer ${
+                  expandReadingView
+                    ? "bg-[#C89B3C]/20 text-[#C89B3C] border-[#C89B3C]"
+                    : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border-[#38322D]"
+                }`}
+                title={expandReadingView ? "Exit Focus Reading View" : "Enter Focus Reading View"}
+              >
+                {expandReadingView ? (
+                  <Minimize2 className="w-4 h-4" />
+                ) : (
+                  <Maximize2 className="w-4 h-4" />
+                )}
+              </button>
+
+              {/* Toggle Metadata Panel */}
+              <button
+                onClick={() => setShowDetailsPanel(!showDetailsPanel)}
+                className={`p-2 rounded-xl transition-colors border cursor-pointer ${
+                  showDetailsPanel
+                    ? "bg-[#C89B3C]/20 text-[#C89B3C] border-[#C89B3C]"
+                    : "bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] border-[#38322D]"
+                }`}
+                title="Toggle Mood & Tags Context"
+              >
+                <Sliders className="w-4 h-4" />
+              </button>
+
+              {/* Collapse Header Button */}
+              <button
+                id="collapse-header-btn"
+                onClick={() => setIsHeaderCollapsed(true)}
+                className="p-2 rounded-xl bg-[#171513] text-[#B7AFA7] hover:text-[#C89B3C] hover:border-[#C89B3C] transition-colors border border-[#38322D] cursor-pointer"
+                title="Collapse Header (Hide controls to maximize reading space)"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+            </div>
+          </header>
+        )}
 
         {/* Active Grounding Indicator (Grounds reflections, insights, and recommendations) */}
         <div className="px-4 lg:px-6 py-2 bg-[#1C1A17] border-b border-[#2C2723] flex items-center justify-between gap-3 text-xs shrink-0">
@@ -767,9 +938,14 @@ export const JournalView: React.FC<JournalViewProps> = ({
               </span>
             )}
           </div>
-          <span className="text-[10px] text-[#7A746E] hidden sm:inline">
-            Gemini reflects & recommends based on your check-in & preferences
-          </span>
+          <div className="flex items-center gap-2 text-[10px] text-[#A69E95]">
+            <span className="hidden md:inline text-[#7A746E]">
+              Grounding:
+            </span>
+            <span className="font-mono text-[#C89B3C] bg-[#171513] px-2 py-0.5 rounded border border-[#38322D]">
+              {DEPTH_CONFIG[depth].label} ({DEPTH_CONFIG[depth].model})
+            </span>
+          </div>
         </div>
 
         {/* Save Error Notice */}
@@ -789,8 +965,10 @@ export const JournalView: React.FC<JournalViewProps> = ({
           </div>
         )}
 
-        {/* Center Scrollable Area */}
-        <div className="flex-1 overflow-y-auto px-4 lg:px-8 py-6 space-y-6">
+        {/* Center Scrollable Area: Centered layout with balanced margins like ChatGPT / Gemini */}
+        <div className={`flex-1 overflow-y-auto py-6 space-y-6 transition-all w-full mx-auto ${
+          expandReadingView ? "max-w-5xl px-4 sm:px-8 lg:px-12" : "max-w-4xl px-4 sm:px-6 lg:px-8"
+        }`}>
           {/* Optional Details / Domains / Mood Strip */}
           {showDetailsPanel && (
             <div className="bg-[#211E1B] rounded-3xl p-5 border border-[#38322D] shadow-md space-y-4 animate-fade-in">
@@ -891,6 +1069,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
             {/* Render Existing Message Turns */}
             {activeEntry?.messages?.map((msg, msgIdx) => {
               const isUser = msg.role === "user";
+              const isLatestModelMsg = !isUser && msgIdx === (activeEntry.messages.length - 1);
               const timeStr = new Date(msg.timestamp).toLocaleTimeString([], {
                 hour: "2-digit",
                 minute: "2-digit",
@@ -899,40 +1078,52 @@ export const JournalView: React.FC<JournalViewProps> = ({
               return (
                 <div
                   key={msg.id}
-                  className={`flex gap-3 ${isUser ? "justify-end" : "justify-start"} animate-fade-in`}
+                  ref={isLatestModelMsg ? latestMessageRef : undefined}
+                  className={`flex gap-3.5 ${isUser ? "justify-end" : "justify-start"} animate-fade-in`}
                 >
                   {!isUser && (
-                    <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shrink-0 mt-1 shadow-xs">
+                    <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#C89B3C]/15 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C] shrink-0 mt-1 shadow-xs">
                       <Sparkles className="w-4 h-4" />
                     </div>
                   )}
 
                   <div
-                    className={`max-w-2xl rounded-3xl p-5 shadow-md relative group space-y-3 ${
+                    className={`transition-all relative group ${
                       isUser
-                        ? "bg-[#2C2723] border border-[#443D36] text-[#F3EFE8] rounded-br-xs"
-                        : "bg-[#211E1B] border border-[#38322D] text-[#F3EFE8] rounded-bl-xs"
+                        ? "max-w-2xl ml-auto bg-[#2A2521] border border-[#443D36] text-[#F3EFE8] rounded-3xl rounded-tr-xs px-5 py-3.5 space-y-2 shadow-sm"
+                        : "w-full max-w-3xl lg:max-w-4xl bg-[#211E1B] border border-[#38322D] text-[#FAF7F2] rounded-3xl p-5 sm:p-7 space-y-4 shadow-sm"
                     }`}
                   >
                     {/* Header */}
-                    <div className="flex items-center justify-between gap-4 pb-2 border-b border-[#38322D]">
-                      <div className="flex items-center gap-2">
-                        <span className={`text-[11px] font-bold ${isUser ? "text-[#C89B3C]" : "text-[#6E9A7B]"}`}>
-                          {isUser ? user.displayName || "You" : "Gemini Mindful Guide"}
+                    <div className="flex items-center justify-between gap-4 pb-2 border-b border-[#38322D]/60">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`text-xs font-bold ${isUser ? "text-[#C89B3C]" : "text-[#E0A93B]"}`}>
+                          {isUser
+                            ? user.displayName || "You"
+                            : mode === "chat"
+                            ? "Gemini"
+                            : "Gemini Mindful Guide"}
                         </span>
-                        {!isUser && activeEntry?.modelUsed && (
-                          <span className="px-2 py-0.5 rounded text-[9px] font-mono bg-[#171513] text-[#C89B3C] border border-[#38322D]">
-                            {activeEntry.modelUsed}
-                          </span>
+                        {!isUser && (msg.modelUsed || activeEntry?.modelUsed) && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-mono bg-[#171513] text-[#C89B3C] border border-[#38322D]">
+                              {msg.modelUsed || activeEntry?.modelUsed}
+                            </span>
+                            {(msg.depth || activeEntry?.depth) && (
+                              <span className="px-2 py-0.5 rounded-full text-[9px] font-medium uppercase tracking-wider bg-[#2C2723] text-[#A69E95] border border-[#38322D]">
+                                {msg.depth || activeEntry?.depth}
+                              </span>
+                            )}
+                          </div>
                         )}
                       </div>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-[#7A746E]">
+                        <span className="text-[11px] text-[#7A746E]">
                           {timeStr}
                         </span>
                         <button
                           onClick={() => handleCopyMessage(msg.id, msg.text)}
-                          className="p-1 rounded opacity-0 group-hover:opacity-100 hover:bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] transition-opacity cursor-pointer"
+                          className="p-1.5 rounded-lg hover:bg-[#171513] text-[#B7AFA7] hover:text-[#F3EFE8] transition-colors cursor-pointer"
                           title="Copy text"
                         >
                           {copiedMsgId === msg.id ? (
@@ -944,10 +1135,50 @@ export const JournalView: React.FC<JournalViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Text Body */}
-                    <div className="text-xs sm:text-sm whitespace-pre-wrap leading-relaxed text-[#EAE6DF]">
-                      {msg.text}
-                    </div>
+                    {/* Text Body: Large, High-Contrast, Legible Typography with Markdown */}
+                    {isUser ? (
+                      <div className="text-[15px] sm:text-base leading-relaxed text-[#F3EFE8] whitespace-pre-wrap font-normal">
+                        {msg.text}
+                      </div>
+                    ) : (
+                      <div className="py-1">
+                        <MarkdownRenderer content={msg.text} />
+                      </div>
+                    )}
+
+                    {/* Assistant Action Bar beneath markdown */}
+                    {!isUser && (
+                      <div className="flex items-center gap-2 pt-2 border-t border-[#38322D]/50 text-xs text-[#8C847B]">
+                        <button
+                          onClick={() => handleCopyMessage(msg.id, msg.text)}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg hover:bg-[#171513] hover:text-[#F3EFE8] transition-colors cursor-pointer"
+                          title="Copy full response"
+                        >
+                          {copiedMsgId === msg.id ? (
+                            <>
+                              <Check className="w-3 h-3 text-[#6E9A7B]" />
+                              <span className="text-[#6E9A7B] text-[11px]">Copied</span>
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="w-3 h-3" />
+                              <span className="text-[11px]">Copy response</span>
+                            </>
+                          )}
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            setInputText("Can you elaborate more on this reflection?");
+                          }}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg hover:bg-[#171513] hover:text-[#F3EFE8] transition-colors cursor-pointer"
+                          title="Ask follow-up question"
+                        >
+                          <Sparkles className="w-3 h-3 text-[#C89B3C]" />
+                          <span className="text-[11px]">Ask follow-up</span>
+                        </button>
+                      </div>
+                    )}
 
                     {/* Direct Suggested Activities & Calendar Integration Cards */}
                     {msg.suggestedActivities && msg.suggestedActivities.length > 0 && (
@@ -1028,6 +1259,36 @@ export const JournalView: React.FC<JournalViewProps> = ({
                                 <p className="text-[11px] text-[#B7AFA7] leading-relaxed">
                                   {act.description}
                                 </p>
+
+                                {/* Google Maps Recommended Nearby Places Chips */}
+                                {act.recommendedPlaces && act.recommendedPlaces.length > 0 && (
+                                  <div className="pt-1 space-y-1">
+                                    <div className="flex items-center gap-1 text-[10px] text-[#C89B3C] font-semibold">
+                                      <MapPin className="w-3 h-3" />
+                                      <span>
+                                        Nearest {act.venueQuery ? act.venueQuery : "venues"} (sorted by distance):
+                                      </span>
+                                    </div>
+                                    <div className="flex flex-wrap gap-1.5">
+                                      {act.recommendedPlaces.slice(0, 4).map((place) => (
+                                        <button
+                                          key={place.id}
+                                          type="button"
+                                          onClick={() => handleOpenScheduleModal(act, actKey)}
+                                          className="px-2 py-0.5 rounded-lg bg-[#211E1B] hover:bg-[#2C2723] text-[#E6E1D8] border border-[#38322D] hover:border-[#C89B3C]/50 text-[10px] flex items-center gap-1 transition-all cursor-pointer"
+                                          title={`Click to schedule at ${place.name} (${place.address})`}
+                                        >
+                                          <span className="font-medium truncate max-w-[130px]">{place.name}</span>
+                                          {place.distanceKm !== undefined && (
+                                            <span className="text-[#C89B3C] font-bold">
+                                              {place.distanceKm}km
+                                            </span>
+                                          )}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
 
                                 {act.reason && (
                                   <div className="p-2 rounded-xl bg-[#211E1B] border border-[#38322D] text-[10px] text-[#C89B3C] flex items-center gap-1.5">
@@ -1121,61 +1382,114 @@ export const JournalView: React.FC<JournalViewProps> = ({
           </div>
         </div>
 
-        {/* BOTTOM: Composer & Reflection Triggers (Warm Dark Themed) */}
-        <footer className="p-4 bg-[#211E1B] border-t border-[#38322D] shrink-0">
-          <div className="max-w-4xl mx-auto space-y-2">
-            <div className="relative bg-[#171513] border border-[#38322D] rounded-3xl p-3 focus-within:border-[#C89B3C] focus-within:ring-2 focus-within:ring-[#C89B3C]/15 transition-all shadow-md">
+        {/* BOTTOM: Sleek, Compact Composer & Reflection Triggers */}
+        <footer className="px-3 sm:px-6 py-2.5 bg-[#211E1B]/95 backdrop-blur-md border-t border-[#38322D] shrink-0">
+          <div className="max-w-4xl mx-auto">
+            <div className="relative bg-[#171513] border border-[#38322D] rounded-2xl sm:rounded-3xl p-2 sm:p-2.5 focus-within:border-[#C89B3C] focus-within:ring-2 focus-within:ring-[#C89B3C]/15 transition-all shadow-md">
               <textarea
                 id="journal-composer-input"
-                rows={3}
-                placeholder="Share your thoughts, ask for activity recommendations, or brainstorm routines... (Cmd+Enter to reflect)"
+                rows={1}
+                placeholder={
+                  mode === "chat"
+                    ? "Chat freely with Gemini (no unsolicited activity recommendations)... (⌘+Enter to send)"
+                    : mode === "brainstorm"
+                    ? "Brainstorm creative routines, ideas, or habits... (⌘+Enter to brainstorm)"
+                    : mode === "summary"
+                    ? "Request a structured synthesis of key insights... (⌘+Enter to summarize)"
+                    : "Reflect on your thoughts, emotions, or day... (⌘+Enter to reflect)"
+                }
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={handleKeyDown}
                 disabled={isGenerating}
-                className="w-full bg-transparent text-sm text-[#F3EFE8] placeholder-[#7A746E] focus:outline-none resize-none px-2 py-1 leading-relaxed"
+                className="w-full bg-transparent text-sm text-[#F3EFE8] placeholder-[#7A746E] focus:outline-none resize-none px-2 py-1 min-h-[38px] max-h-32 leading-relaxed"
               />
 
-              <div className="flex items-center justify-between gap-2 pt-2 border-t border-[#38322D]/70 px-2">
-                <div className="flex items-center gap-2 text-[11px] text-[#7A746E]">
-                  <span className="hidden sm:inline">Press</span>
-                  <kbd className="hidden sm:inline px-1.5 py-0.5 bg-[#211E1B] border border-[#38322D] rounded text-[10px] font-mono text-[#B7AFA7]">
-                    ⌘ + Enter
-                  </kbd>
-                  <span className="hidden sm:inline">to converse with Gemini</span>
+              <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-[#38322D]/60 px-1">
+                {/* Left: Quick Inline Mode Switcher */}
+                <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+                  {(
+                    [
+                      { id: "reflection", label: "Reflect", icon: Sparkles, hint: "Mindful listening" },
+                      { id: "chat", label: "Chat", icon: MessageSquare, hint: "Casual conversation" },
+                      { id: "brainstorm", label: "Brainstorm", icon: Lightbulb, hint: "Creative ideas" },
+                      { id: "summary", label: "Summary", icon: FileText, hint: "Key takeaways" },
+                    ] as const
+                  ).map(({ id, label, icon: Icon, hint }) => {
+                    const isActive = mode === id;
+                    return (
+                      <button
+                        key={id}
+                        type="button"
+                        onClick={() => {
+                          setMode(id as JournalMode);
+                          if (onUpdateMode && activeEntry) onUpdateMode(id as JournalMode);
+                        }}
+                        title={hint}
+                        className={`flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-semibold transition-all cursor-pointer ${
+                          isActive
+                            ? "bg-[#C89B3C]/20 text-[#C89B3C] border border-[#C89B3C]/35 shadow-xs"
+                            : "text-[#8C847B] hover:text-[#D8D1C7] hover:bg-[#201C19]"
+                        }`}
+                      >
+                        <Icon className="w-3 h-3" />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
+                  <span className="text-[10px] text-[#5A544E] hidden md:inline ml-1 font-mono">
+                    ⌘+Enter
+                  </span>
                 </div>
 
-                <div className="flex items-center gap-2">
+                {/* Right: Actions */}
+                <div className="flex items-center gap-1.5 ml-auto">
                   {/* Direct Save Note Button */}
                   <button
                     id="save-note-direct-btn"
                     type="button"
                     onClick={handleSaveDirectly}
                     disabled={isSaving || isGenerating || (!inputText.trim() && !title.trim())}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-[#38322D] text-xs font-semibold text-[#B7AFA7] hover:bg-[#211E1B] hover:text-[#F3EFE8] transition-colors disabled:opacity-40 cursor-pointer"
-                    title="Save thoughts directly without AI reflection"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-xl border border-[#38322D] text-[11px] font-semibold text-[#B7AFA7] hover:bg-[#211E1B] hover:text-[#F3EFE8] transition-colors disabled:opacity-30 cursor-pointer"
+                    title="Save note directly without AI generation"
                   >
-                    <Save className="w-3.5 h-3.5" />
-                    <span>{isSaving ? "Saving..." : "Save Note"}</span>
+                    <Save className="w-3 h-3" />
+                    <span className="hidden sm:inline">{isSaving ? "Saving..." : "Save"}</span>
                   </button>
 
-                  {/* Reflect with Gemini Button */}
+                  {/* Reflect/Chat with Gemini Button */}
                   <button
                     id="reflect-with-gemini-btn"
                     type="button"
                     onClick={handleReflectWithGemini}
                     disabled={isGenerating || !inputText.trim()}
-                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-xl bg-[#C89B3C] text-[#171513] text-xs font-bold hover:bg-[#b98c2d] transition-all shadow-sm disabled:opacity-40 active:scale-98 cursor-pointer"
+                    className="flex items-center gap-1.5 px-3.5 py-1 rounded-xl bg-[#C89B3C] text-[#171513] text-xs font-bold hover:bg-[#b98c2d] transition-all shadow-xs disabled:opacity-30 active:scale-98 cursor-pointer"
                   >
                     {isGenerating ? (
                       <>
                         <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                        <span>Reflecting...</span>
+                        <span>{mode === "chat" ? "Replying..." : "Thinking..."}</span>
                       </>
                     ) : (
                       <>
-                        <Sparkles className="w-3.5 h-3.5" />
-                        <span>Reflect with Gemini</span>
+                        {mode === "chat" ? (
+                          <MessageSquare className="w-3.5 h-3.5" />
+                        ) : mode === "brainstorm" ? (
+                          <Lightbulb className="w-3.5 h-3.5" />
+                        ) : mode === "summary" ? (
+                          <FileText className="w-3.5 h-3.5" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        <span>
+                          {mode === "chat"
+                            ? "Send"
+                            : mode === "brainstorm"
+                            ? "Brainstorm"
+                            : mode === "summary"
+                            ? "Summarize"
+                            : "Reflect"}
+                        </span>
                       </>
                     )}
                   </button>
@@ -1204,6 +1518,7 @@ export const JournalView: React.FC<JournalViewProps> = ({
       <ScheduleActivityModal
         isOpen={modalActivityState.isOpen}
         activity={modalActivityState.activity}
+        locationName="East Surabaya"
         onClose={() =>
           setModalActivityState({
             isOpen: false,
