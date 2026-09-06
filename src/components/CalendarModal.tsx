@@ -185,6 +185,7 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
   // New Event Form State
   const [newTitle, setNewTitle] = useState("");
   const [newDescription, setNewDescription] = useState("");
+  const [newLocation, setNewLocation] = useState("");
   const [newStartDate, setNewStartDate] = useState(new Date().toISOString().split("T")[0]);
   const [newStartTime, setNewStartTime] = useState("09:00");
   const [newEndTime, setNewEndTime] = useState("10:00");
@@ -329,6 +330,7 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
     const input: CalendarReminderInput = {
       title: newTitle.trim(),
       description: newDescription.trim(),
+      location: newLocation.trim().slice(0, 500) || undefined,
       startTime: startIso,
       endTime: endIso,
       isAllDay: newIsAllDay,
@@ -347,6 +349,7 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
           id: `local-evt-${Date.now()}`,
           summary: input.title,
           description: input.description,
+          location: input.location,
           start: newIsAllDay ? { date: newStartDate } : { dateTime: startIso },
           end: newIsAllDay ? { date: newStartDate } : { dateTime: endIso },
           isTaskReminder: true,
@@ -362,6 +365,7 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
       // Reset Form
       setNewTitle("");
       setNewDescription("");
+      setNewLocation("");
       setTimeout(() => {
         setFormSuccessMessage(null);
         setActiveTab("today");
@@ -1795,6 +1799,29 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
                     placeholder="e.g. 🧘 Midday Mindful Walking & Reflection..."
                     className="w-full px-3.5 py-2.5 bg-[#171513] border border-[#38322D] rounded-xl text-[#F3EFE8] font-medium placeholder-[#B7AFA7]/60 focus:border-[#C89B3C] focus:ring-1 focus:ring-[#C89B3C]/40 outline-none text-sm"
                   />
+                </div>
+
+                {/* Optional Location */}
+                <div className="space-y-1.5">
+                  <label htmlFor="input-calendar-location" className="block text-xs font-semibold text-[#F3EFE8]">
+                    Location <span className="font-normal text-[#B7AFA7]">(optional)</span>
+                  </label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[#C89B3C]" aria-hidden="true" />
+                    <input
+                      id="input-calendar-location"
+                      type="text"
+                      value={newLocation}
+                      onChange={(e) => setNewLocation(e.target.value.slice(0, 500))}
+                      maxLength={500}
+                      autoComplete="street-address"
+                      placeholder="e.g. Kintono Badminton Hall, Surabaya"
+                      className="w-full rounded-xl border border-[#38322D] bg-[#171513] py-2.5 pl-10 pr-3.5 text-xs text-[#F3EFE8] outline-none placeholder:text-[#B7AFA7]/60 focus:border-[#C89B3C] focus:ring-1 focus:ring-[#C89B3C]/40"
+                    />
+                  </div>
+                  <p className="text-[11px] text-[#B7AFA7]">
+                    Saved only with this event; it does not change your Profile location.
+                  </p>
                 </div>
 
                 {/* Date & All Day Row */}
