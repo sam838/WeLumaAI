@@ -10,6 +10,7 @@ import {
   placesSearchRequestSchema,
   recommendationOutputSchema,
   reflectRequestSchema,
+  normalizeOptionalRequestFields,
   safePromptData,
 } from "../src/server/validation";
 import { sanitizeFirestorePayload } from "../src/utils/firestorePayload";
@@ -71,6 +72,32 @@ test("all journal AI modes accept the complete location context sent by the prof
 
     assert.equal(result.success, true, `${depth} mode should accept the profile location context`);
   }
+});
+
+test("all journal AI modes treat unfilled optional profile fields as absent", () => {
+  for (const depth of ["quick", "reflect", "deep"] as const) {
+    const payload = normalizeOptionalRequestFields({
+      prompt: "A calm day",
+      depth,
+      userProfile: {
+        countryStay: null,
+        province: null,
+        city: null,
+        religion: null,
+      },
+    });
+
+    assert.equal(
+      reflectRequestSchema.safeParse(payload).success,
+      true,
+      `${depth} mode should not require optional profile fields`
+    );
+  }
+});
+
+test("optional-field normalization does not remove malformed array entries", () => {
+  const payload = normalizeOptionalRequestFields({ prompt: "A calm day", pastEntries: [null] });
+  assert.equal(reflectRequestSchema.safeParse(payload).success, false);
 });
 
 test("places request validates coordinate pairs and geographic ranges", () => {

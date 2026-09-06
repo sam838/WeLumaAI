@@ -207,6 +207,25 @@ export const recommendationOutputSchema = z
   })
   .strict();
 
+/**
+ * Firestore and form state may represent an unfilled optional field as null.
+ * Omit those object properties before strict validation while preserving null
+ * array elements so malformed lists are still rejected by their schemas.
+ */
+export function normalizeOptionalRequestFields(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeOptionalRequestFields(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, item]) => item !== null && item !== undefined)
+        .map(([key, item]) => [key, normalizeOptionalRequestFields(item)])
+    );
+  }
+  return value;
+}
+
 export function safePromptData(value: unknown, maxLength = 20_000): string {
   const serialized = JSON.stringify(value ?? null).slice(0, maxLength);
   return serialized.replace(/[<>]/g, (character) => (character === "<" ? "\\u003c" : "\\u003e"));

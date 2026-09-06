@@ -13,6 +13,7 @@ import {
   recommendationOutputSchema,
   recommendActivitiesRequestSchema,
   reflectRequestSchema,
+  normalizeOptionalRequestFields,
   safePromptData,
 } from "./src/server/validation";
 
@@ -239,7 +240,7 @@ async function startServer() {
   // 2. Gemini Reflection & Journal Processing Endpoint
   // Implements Directive 7: Adaptive Resource Usage (quick, reflect, deep)
   app.post("/api/gemini/reflect", requireFirebaseAuth, aiRateLimit, async (req: Request, res: Response) => {
-    const parsedPayload = reflectRequestSchema.safeParse(req.body);
+    const parsedPayload = reflectRequestSchema.safeParse(normalizeOptionalRequestFields(req.body));
     if (!parsedPayload.success) return invalidPayload(res, parsedPayload.error.issues);
     const payload = parsedPayload.data;
     const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
@@ -743,7 +744,7 @@ async function startServer() {
 
   // 2b. Gemini Activity Recommendation Engine (Tailored to Calendar, Preferences, Prompts & Conditions)
   app.post("/api/gemini/recommend-activities", requireFirebaseAuth, aiRateLimit, async (req: Request, res: Response) => {
-    const parsedPayload = recommendActivitiesRequestSchema.safeParse(req.body);
+    const parsedPayload = recommendActivitiesRequestSchema.safeParse(normalizeOptionalRequestFields(req.body));
     if (!parsedPayload.success) return invalidPayload(res, parsedPayload.error.issues);
     const payload = parsedPayload.data;
     const userPrompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
@@ -928,7 +929,7 @@ In each recommendation's 'reason' field, explicitly explain how that specific ac
 
   // 2c. Ask My Journal Grounded Inquiry Endpoint (Directive 22)
   app.post("/api/gemini/inquire", requireFirebaseAuth, aiRateLimit, async (req: Request, res: Response) => {
-    const parsedPayload = inquiryRequestSchema.safeParse(req.body);
+    const parsedPayload = inquiryRequestSchema.safeParse(normalizeOptionalRequestFields(req.body));
     if (!parsedPayload.success) return invalidPayload(res, parsedPayload.error.issues);
     const payload = parsedPayload.data;
     const query = typeof payload.query === "string" ? payload.query.trim() : "";
@@ -1043,7 +1044,7 @@ In each recommendation's 'reason' field, explicitly explain how that specific ac
   });
 
   app.post("/api/maps/places-search", requireFirebaseAuth, mapsRateLimit, async (req: Request, res: Response) => {
-    const parsedPayload = placesSearchRequestSchema.safeParse(req.body);
+    const parsedPayload = placesSearchRequestSchema.safeParse(normalizeOptionalRequestFields(req.body));
     if (!parsedPayload.success) return invalidPayload(res, parsedPayload.error.issues);
     const payload = parsedPayload.data;
     const query = payload.query;
