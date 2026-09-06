@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { UserProfile, AuthUserState } from "../types";
 import { saveUserProfile } from "../firebase";
 import { Sparkles, ArrowRight } from "lucide-react";
@@ -139,13 +139,27 @@ export function OnboardingForm({ user, onComplete }: OnboardingFormProps) {
     }
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleSkip();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm">
-      <div className="min-h-full flex items-center justify-center p-4 py-12">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm"
+      onClick={handleSkip}
+    >
+      <div className="min-h-full flex items-center justify-center p-3 sm:p-4 py-8">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="w-full max-w-2xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] flex flex-col"
+          onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-2xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] flex flex-col max-h-[90vh] overflow-y-auto my-auto"
         >
           <div className="p-8 sm:p-12 text-[#F3EFE8]">
             <div className="flex items-center gap-3 mb-6">

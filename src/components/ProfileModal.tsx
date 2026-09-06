@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { AuthUserState, UserProfile } from "../types";
 import { updateUserProfileAndAccount } from "../firebase";
 import {
@@ -209,14 +209,28 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
     }
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm"
+      onClick={onClose}
+    >
       <div className="min-h-full flex items-center justify-center p-3 sm:p-6 py-8">
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
           exit={{ opacity: 0, scale: 0.96 }}
-          className="w-full max-w-3xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] overflow-hidden flex flex-col my-auto"
+          onClick={(e) => e.stopPropagation()}
+          className="w-full max-w-3xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] overflow-hidden flex flex-col my-auto max-h-[90vh] overflow-y-auto"
         >
           {/* Header */}
           <div className="px-6 py-5 sm:px-8 border-b border-[#38322D] flex items-center justify-between bg-[#171513]/60">

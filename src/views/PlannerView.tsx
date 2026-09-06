@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   CalendarCheck,
   Plus,
@@ -51,6 +51,16 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 }) => {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && createModalOpen) {
+        setCreateModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [createModalOpen]);
 
   // Form State for Routine Creator
   const [name, setName] = useState("");
@@ -432,8 +442,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
 
       {/* Routine Creation Modal */}
       {createModalOpen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#211E1B] border border-[#38322D] rounded-3xl p-6 sm:p-8 text-[#F3EFE8] space-y-5 shadow-2xl">
+        <div
+          className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
+          onClick={() => setCreateModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-lg bg-[#211E1B] border border-[#38322D] rounded-3xl p-6 sm:p-8 text-[#F3EFE8] space-y-5 shadow-2xl max-h-[90vh] overflow-y-auto my-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="flex items-center justify-between pb-3 border-b border-[#38322D]">
               <div className="flex items-center space-x-2.5">
                 <div className="w-8 h-8 rounded-xl bg-[#C89B3C]/10 border border-[#C89B3C]/30 flex items-center justify-center text-[#C89B3C]">

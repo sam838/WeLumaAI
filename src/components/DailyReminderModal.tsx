@@ -74,6 +74,16 @@ export const DailyReminderModal: React.FC<DailyReminderModalProps> = ({
     }
   }, [isOpen, user.profile?.dailyReminder]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleRequestBrowserPermission = async () => {
@@ -190,13 +200,16 @@ export const DailyReminderModal: React.FC<DailyReminderModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#110F0E]/80 backdrop-blur-sm animate-fade-in">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-[#110F0E]/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 md:p-6 animate-fade-in"
+      onClick={onClose}
+    >
       <div
-        className="w-full max-w-lg rounded-3xl bg-[#1C1A17] border border-[#38322D] shadow-2xl p-6 text-[#F3EFE8] space-y-6 relative overflow-hidden"
+        className="w-full max-w-lg rounded-3xl bg-[#1C1A17] border border-[#38322D] shadow-2xl flex flex-col max-h-[90vh] my-auto text-[#F3EFE8] relative overflow-hidden"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-start justify-between gap-3 border-b border-[#2C2723] pb-4">
+        <div className="flex items-start justify-between gap-3 p-5 sm:p-6 border-b border-[#2C2723] shrink-0 bg-[#1C1A17]">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-[#C89B3C]/15 border border-[#C89B3C]/30 text-[#C89B3C] flex items-center justify-center shrink-0">
               <BellRing className="w-5 h-5" />
@@ -218,24 +231,26 @@ export const DailyReminderModal: React.FC<DailyReminderModalProps> = ({
           </button>
         </div>
 
-        {/* Master Toggle */}
-        <div className="flex items-center justify-between p-4 rounded-2xl bg-[#171513] border border-[#38322D]">
-          <div className="space-y-0.5">
-            <span className="text-sm font-semibold text-[#F3EFE8]">Enable Daily Reminder</span>
-            <p className="text-xs text-[#A69E95]">
-              Receive an everyday prompt to log your mood, energy, and mindful thoughts.
-            </p>
+        {/* Scrollable Content Body */}
+        <div className="p-5 sm:p-6 space-y-5 overflow-y-auto flex-1 custom-scrollbar">
+          {/* Master Toggle */}
+          <div className="flex items-center justify-between p-4 rounded-2xl bg-[#171513] border border-[#38322D]">
+            <div className="space-y-0.5">
+              <span className="text-sm font-semibold text-[#F3EFE8]">Enable Daily Reminder</span>
+              <p className="text-xs text-[#A69E95]">
+                Receive an everyday prompt to log your mood, energy, and mindful thoughts.
+              </p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+                className="sr-only peer"
+              />
+              <div className="w-11 h-6 bg-[#2C2723] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#C89B3C]"></div>
+            </label>
           </div>
-          <label className="relative inline-flex items-center cursor-pointer">
-            <input
-              type="checkbox"
-              checked={enabled}
-              onChange={(e) => setEnabled(e.target.checked)}
-              className="sr-only peer"
-            />
-            <div className="w-11 h-6 bg-[#2C2723] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#C89B3C]"></div>
-          </label>
-        </div>
 
         {enabled && (
           <div className="space-y-4">
@@ -377,9 +392,10 @@ export const DailyReminderModal: React.FC<DailyReminderModalProps> = ({
             <span>{errorMessage}</span>
           </div>
         )}
+        </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-end gap-3 pt-4 border-t border-[#2C2723]">
+        {/* Footer Actions - Pinned */}
+        <div className="flex items-center justify-end gap-3 p-4 sm:p-5 border-t border-[#2C2723] bg-[#171513]/95 backdrop-blur-xs shrink-0">
           <button
             type="button"
             onClick={onClose}

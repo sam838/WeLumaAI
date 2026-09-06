@@ -49,6 +49,16 @@ export const LocationTimezoneModal: React.FC<LocationTimezoneModalProps> = ({
     return () => clearInterval(interval);
   }, [isOpen, currentLocation.timezone]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleDetectGps = async () => {
@@ -106,11 +116,11 @@ export const LocationTimezoneModal: React.FC<LocationTimezoneModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs animate-fade-in"
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/80 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 animate-fade-in"
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-lg rounded-3xl bg-[#211E1B] border border-[#38322D] shadow-2xl p-6 space-y-5 animate-scale-up text-[#F3EFE8] max-h-[90vh] flex flex-col"
+        className="relative w-full max-w-lg rounded-3xl bg-[#211E1B] border border-[#38322D] shadow-2xl p-6 space-y-5 animate-scale-up text-[#F3EFE8] max-h-[90vh] my-auto flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}

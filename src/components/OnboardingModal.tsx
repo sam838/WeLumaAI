@@ -97,12 +97,26 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     }
   };
 
+  React.useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        handleSkip();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 py-8">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 py-8"
+      onClick={handleSkip}
+    >
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{ opacity: 1, scale: 1 }}
-        className="w-full max-w-2xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] p-6 sm:p-10 text-[#F3EFE8] space-y-6 my-auto"
+        onClick={(e) => e.stopPropagation()}
+        className="w-full max-w-2xl bg-[#211E1B] rounded-3xl shadow-2xl border border-[#38322D] p-6 sm:p-10 text-[#F3EFE8] space-y-6 my-auto max-h-[90vh] overflow-y-auto"
       >
         {/* Header */}
         <div className="flex items-center space-x-3">

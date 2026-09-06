@@ -547,11 +547,27 @@ export const CalendarModal: React.FC<CalendarModalProps> = ({
     );
   };
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isOpen) {
+        onClose();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 md:p-6">
-      <div className="w-full max-w-5xl bg-[#211E1B] rounded-3xl border border-[#38322D] shadow-2xl flex flex-col max-h-[92vh] overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+    <div
+      className="fixed inset-0 z-50 overflow-y-auto bg-[#171513]/85 backdrop-blur-sm flex items-center justify-center p-2 sm:p-4 md:p-6"
+      onClick={onClose}
+    >
+      <div
+        className="w-full max-w-5xl bg-[#211E1B] rounded-3xl border border-[#38322D] shadow-2xl flex flex-col max-h-[92vh] my-auto overflow-hidden animate-in fade-in zoom-in-95 duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Modal Top Bar */}
         <div className="px-5 sm:px-7 py-4 border-b border-[#38322D] flex items-center justify-between bg-[#171513]/70 shrink-0">
           <div className="flex items-center space-x-3">
