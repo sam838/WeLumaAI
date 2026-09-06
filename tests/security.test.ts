@@ -24,6 +24,25 @@ test("reflection request rejects empty, oversized, and unexpected input", () => 
   assert.equal(reflectRequestSchema.safeParse({ prompt: "x".repeat(10_001) }).success, false);
 });
 
+test("all journal AI modes accept the complete location context sent by the profile", () => {
+  for (const depth of ["quick", "reflect", "deep"] as const) {
+    const result = reflectRequestSchema.safeParse({
+      prompt: "A calm day",
+      depth,
+      userProfile: {
+        locationInfo: {
+          timezone: "Asia/Bangkok",
+          utcOffset: "UTC+07:00",
+          formattedOffsetHours: 7,
+          source: "browser_timezone",
+        },
+      },
+    });
+
+    assert.equal(result.success, true, `${depth} mode should accept the profile location context`);
+  }
+});
+
 test("places request validates coordinate pairs and geographic ranges", () => {
   assert.equal(placesSearchRequestSchema.safeParse({ query: "park", latitude: -7.25 }).success, false);
   assert.equal(

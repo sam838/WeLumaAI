@@ -321,7 +321,13 @@ export default function App() {
 
         if (!response.ok) {
           const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || `Server responded with status ${response.status}`);
+          const invalidFields = Array.isArray(errData.fields)
+            ? errData.fields.filter((field: unknown): field is string => typeof field === "string").slice(0, 4)
+            : [];
+          const fieldDetails = invalidFields.length > 0
+            ? ` Check these fields: ${invalidFields.join(", ")}.`
+            : "";
+          throw new Error(`${errData.error || `Server responded with status ${response.status}`}${fieldDetails}`);
         }
 
         const data = await response.json();

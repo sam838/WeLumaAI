@@ -9,6 +9,7 @@ const locationSchema = z
   .object({
     timezone: shortText.optional(),
     utcOffset: shortText.optional(),
+    formattedOffsetHours: z.number().finite().min(-24).max(24).optional(),
     city: shortText.optional(),
     region: shortText.optional(),
     country: shortText.optional(),
