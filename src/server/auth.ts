@@ -10,16 +10,22 @@ declare global {
   }
 }
 
+export function resolveFirebaseProjectId(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return (
+    env.FIREBASE_PROJECT_ID ||
+    env.VITE_FIREBASE_PROJECT_ID ||
+    env.GCP_PROJECT_ID ||
+    env.GOOGLE_CLOUD_PROJECT ||
+    env.GCLOUD_PROJECT
+  );
+}
+
 function getAdminAuth() {
   const app =
     getApps()[0] ||
     initializeApp({
       credential: applicationDefault(),
-      projectId:
-        process.env.GOOGLE_CLOUD_PROJECT ||
-        process.env.GCLOUD_PROJECT ||
-        process.env.GCP_PROJECT_ID ||
-        process.env.VITE_FIREBASE_PROJECT_ID,
+      projectId: resolveFirebaseProjectId(),
     });
   return getAuth(app);
 }
@@ -50,8 +56,24 @@ export const requireFirebaseAuth: RequestHandler = async (
     }
     res.locals.auth = decoded;
     next();
-  } catch {
-    res.status(401).json({ error: "Your session is invalid or expired. Please sign in again." });
+  } catch (error: unknown) {
+    const code =
+      error && typeof error === "object" && "code" in error && typeof error.code === "string"
+        ? error.code
+        : "auth/verification-failed";
+    console.warn("[Firebase Auth] ID token verification failed", {
+      code,
+      projectId: resolveFirebaseProjectId() || "not-configured",
+    });
+
+    const configurationFailure =
+      code === "auth/invalid-credential" || code === "auth/insufficient-permission";
+    res.status(configurationFailure ? 503 : 401).json({
+      error: configurationFailure
+        ? "Authentication verification is not configured correctly on the server."
+        : "Your session is invalid or expired. Please sign in again.",
+      code: configurationFailure ? "AUTH_SERVER_CONFIGURATION" : "AUTH_SESSION_INVALID",
+    });
   }
 };
 

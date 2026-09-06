@@ -210,7 +210,7 @@ gcloud run deploy gemini-journal \
   --region us-central1 \
   --allow-unauthenticated \
   --set-build-env-vars="VITE_FIREBASE_API_KEY=YOUR_FIREBASE_WEB_API_KEY,VITE_FIREBASE_AUTH_DOMAIN=YOUR_PROJECT_ID.firebaseapp.com,VITE_FIREBASE_PROJECT_ID=YOUR_PROJECT_ID,VITE_FIREBASE_STORAGE_BUCKET=YOUR_PROJECT_ID.firebasestorage.app,VITE_FIREBASE_MESSAGING_SENDER_ID=YOUR_SENDER_ID,VITE_FIREBASE_APP_ID=YOUR_FIREBASE_APP_ID,VITE_GOOGLE_CLIENT_ID=YOUR_GOOGLE_OAUTH_CLIENT_ID" \
-  --set-env-vars="GCP_PROJECT_ID=YOUR_PROJECT_ID" \
+  --set-env-vars="GCP_PROJECT_ID=YOUR_PROJECT_ID,FIREBASE_PROJECT_ID=YOUR_PROJECT_ID" \
   --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,GOOGLE_MAPS_API_KEY=GOOGLE_MAPS_API_KEY:latest" \
   --port 3000
 
@@ -267,6 +267,7 @@ Client-visible Firebase identifiers and the Google OAuth client ID must use `imp
 | `VITE_FIREBASE_APP_ID` | Vite build/client | Yes | Firebase web app ID |
 | `VITE_FIREBASE_DATABASE_ID` | Vite build/client | No | Named Firestore database; blank means default |
 | `VITE_GOOGLE_CLIENT_ID` | Vite build/client | Calendar only | Google Calendar OAuth web client ID |
+| `FIREBASE_PROJECT_ID` | Server | Yes | Firebase project whose ID tokens the backend verifies; must match `VITE_FIREBASE_PROJECT_ID` |
 | `GCP_PROJECT_ID` | Server | Recommended | Secret Manager project override |
 | `GEMINI_API_KEY` | Server secret | Yes for AI | Gemini credential, preferably injected from Secret Manager |
 | `GOOGLE_MAPS_API_KEY` | Server secret | Maps only | Places/Geocoding credential, preferably injected from Secret Manager |

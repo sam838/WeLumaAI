@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { readBearerToken } from "../src/server/auth";
+import { readBearerToken, resolveFirebaseProjectId } from "../src/server/auth";
 import {
   placesSearchRequestSchema,
   recommendationOutputSchema,
@@ -15,6 +15,25 @@ test("bearer parser accepts one bounded token and rejects malformed headers", ()
   assert.equal(readBearerToken("Basic abc"), null);
   assert.equal(readBearerToken("Bearer one two"), null);
   assert.equal(readBearerToken(undefined), null);
+});
+
+test("Firebase token verification prefers the explicit Firebase project", () => {
+  assert.equal(
+    resolveFirebaseProjectId({
+      FIREBASE_PROJECT_ID: "firebase-project",
+      VITE_FIREBASE_PROJECT_ID: "client-project",
+      GCP_PROJECT_ID: "secret-project",
+      GOOGLE_CLOUD_PROJECT: "hosting-project",
+    }),
+    "firebase-project"
+  );
+  assert.equal(
+    resolveFirebaseProjectId({
+      VITE_FIREBASE_PROJECT_ID: "client-project",
+      GOOGLE_CLOUD_PROJECT: "hosting-project",
+    }),
+    "client-project"
+  );
 });
 
 test("reflection request rejects empty, oversized, and unexpected input", () => {

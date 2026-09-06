@@ -8,8 +8,13 @@ export async function authenticatedFetch(
   if (!user || user.isAnonymous) {
     throw new Error("Sign in with Google to continue.");
   }
-  const token = await user.getIdToken();
-  const headers = new Headers(init.headers);
-  headers.set("Authorization", `Bearer ${token}`);
-  return fetch(input, { ...init, headers });
+  const send = async (forceRefresh: boolean): Promise<Response> => {
+    const token = await user.getIdToken(forceRefresh);
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${token}`);
+    return fetch(input, { ...init, headers });
+  };
+
+  const response = await send(false);
+  return response.status === 401 ? send(true) : response;
 }
