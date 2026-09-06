@@ -30,6 +30,29 @@ function getAdminAuth() {
   return getAuth(app);
 }
 
+export function shouldRetryWithoutRevocationCheck(code: string): boolean {
+  return code === "auth/internal-error";
+}
+
+async function verifyFirebaseIdToken(token: string): Promise<DecodedIdToken> {
+  const adminAuth = getAdminAuth();
+  try {
+    return await adminAuth.verifyIdToken(token, true);
+  } catch (error: unknown) {
+    const code =
+      error && typeof error === "object" && "code" in error && typeof error.code === "string"
+        ? error.code
+        : "auth/verification-failed";
+    if (!shouldRetryWithoutRevocationCheck(code)) throw error;
+
+    console.warn("[Firebase Auth] Revocation lookup unavailable; using signed ID-token verification", {
+      code,
+      projectId: resolveFirebaseProjectId() || "not-configured",
+    });
+    return adminAuth.verifyIdToken(token, false);
+  }
+}
+
 export function readBearerToken(header: string | undefined): string | null {
   if (!header || header.length > 10_000) return null;
   const match = /^Bearer\s+([^\s]+)$/i.exec(header.trim());
@@ -48,7 +71,7 @@ export const requireFirebaseAuth: RequestHandler = async (
   }
 
   try {
-    const decoded = await getAdminAuth().verifyIdToken(token, true);
+    const decoded = await verifyFirebaseIdToken(token);
     const provider = decoded.firebase?.sign_in_provider;
     if (provider !== "google.com" || decoded.email_verified !== true) {
       res.status(403).json({ error: "A verified Google account is required." });
@@ -67,7 +90,9 @@ export const requireFirebaseAuth: RequestHandler = async (
     });
 
     const configurationFailure =
-      code === "auth/invalid-credential" || code === "auth/insufficient-permission";
+      code === "auth/invalid-credential" ||
+      code === "auth/insufficient-permission" ||
+      code === "auth/internal-error";
     res.status(configurationFailure ? 503 : 401).json({
       error: configurationFailure
         ? "Authentication verification is not configured correctly on the server."

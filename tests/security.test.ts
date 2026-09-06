@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
-import { readBearerToken, resolveFirebaseProjectId } from "../src/server/auth";
+import {
+  readBearerToken,
+  resolveFirebaseProjectId,
+  shouldRetryWithoutRevocationCheck,
+} from "../src/server/auth";
 import {
   placesSearchRequestSchema,
   recommendationOutputSchema,
@@ -34,6 +38,13 @@ test("Firebase token verification prefers the explicit Firebase project", () => 
     }),
     "client-project"
   );
+});
+
+test("Firebase verification degrades only when the revocation service has an internal error", () => {
+  assert.equal(shouldRetryWithoutRevocationCheck("auth/internal-error"), true);
+  assert.equal(shouldRetryWithoutRevocationCheck("auth/id-token-revoked"), false);
+  assert.equal(shouldRetryWithoutRevocationCheck("auth/id-token-expired"), false);
+  assert.equal(shouldRetryWithoutRevocationCheck("auth/argument-error"), false);
 });
 
 test("reflection request rejects empty, oversized, and unexpected input", () => {
