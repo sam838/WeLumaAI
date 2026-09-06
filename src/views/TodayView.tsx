@@ -73,7 +73,6 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const [checkInNotes, setCheckInNotes] = useState<string>(
     todayCheckIn?.notes || ""
   );
-  const [checkInSavedNotice, setCheckInSavedNotice] = useState(false);
   const [checkInSaveError, setCheckInSaveError] = useState<string | null>(null);
   const [isSavingCheckIn, setIsSavingCheckIn] = useState(false);
   const [pendingCheckIn, setPendingCheckIn] = useState<DailyCheckInState | null>(null);
@@ -100,13 +99,10 @@ export const TodayView: React.FC<TodayViewProps> = ({
   const saveCheckIn = async (checkIn: DailyCheckInState) => {
     setPendingCheckIn(checkIn);
     setCheckInSaveError(null);
-    setCheckInSavedNotice(false);
     setIsSavingCheckIn(true);
     try {
       await onSaveCheckIn(checkIn);
       setPendingCheckIn(null);
-      setCheckInSavedNotice(true);
-      setTimeout(() => setCheckInSavedNotice(false), 2500);
     } catch {
       setCheckInSaveError(
         "Cloud sync failed. Your check-in is still on this device; retry when your connection and sign-in are available."
@@ -137,6 +133,13 @@ export const TodayView: React.FC<TodayViewProps> = ({
 
   const completedRoutinesCount = routines.filter((r) => r.completedToday).length;
   const recommendedActivities = activities.slice(0, 3);
+  const hasCheckedInToday = todayCheckIn?.date === todayStr;
+  const lastCheckInUpdate = hasCheckedInToday && todayCheckIn?.updatedAt
+    ? new Date(todayCheckIn.updatedAt).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#171513] text-[#F3EFE8] p-4 sm:p-6 lg:p-8">
@@ -189,11 +192,27 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   </div>
                 </div>
 
-                {checkInSavedNotice && (
-                  <span className="flex items-center space-x-1 text-xs text-[#6E9A7B] font-medium bg-[#6E9A7B]/10 px-2.5 py-1 rounded-full border border-[#6E9A7B]/30">
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Saved</span>
-                  </span>
+                {hasCheckedInToday && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={`flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full border ${
+                      checkInSaveError
+                        ? "text-[#C89B3C] bg-[#C89B3C]/10 border-[#C89B3C]/30"
+                        : "text-[#6E9A7B] bg-[#6E9A7B]/10 border-[#6E9A7B]/30"
+                    }`}
+                  >
+                    {checkInSaveError ? (
+                      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                    )}
+                    <span>
+                      {checkInSaveError
+                        ? "Checked in · Sync pending"
+                        : `Checked in today${lastCheckInUpdate ? ` · ${lastCheckInUpdate}` : ""}`}
+                    </span>
+                  </div>
                 )}
               </div>
 
@@ -331,7 +350,13 @@ export const TodayView: React.FC<TodayViewProps> = ({
                     ) : (
                       <Check className="w-3.5 h-3.5" />
                     )}
-                    <span>{isSavingCheckIn ? "Saving…" : "Record Check-In"}</span>
+                    <span>
+                      {isSavingCheckIn
+                        ? "Saving…"
+                        : hasCheckedInToday
+                        ? "Update Check-In"
+                        : "Record Check-In"}
+                    </span>
                   </button>
                 </div>
               </form>
