@@ -384,6 +384,9 @@ html, body, div, header, nav, main, aside, footer {
 [data-theme="light"] .text-emerald-400 {
   color: #166534 !important;
 }
+[data-theme="light"] .text-emerald-200 {
+  color: #12613A !important;
+}
 [data-theme="light"] .text-\[\#B86B6B\],
 [data-theme="light"] .text-\[\#b86b6b\] {
   color: #A82828 !important;
