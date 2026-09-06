@@ -15,6 +15,8 @@ import {
   Heart,
   CalendarCheck,
   Check,
+  AlertCircle,
+  Loader2,
 } from "lucide-react";
 import {
   AuthUserState,
@@ -31,7 +33,7 @@ interface TodayViewProps {
   routines: WellbeingRoutine[];
   activities: WellbeingActivity[];
   todayCheckIn: DailyCheckInState | null;
-  onSaveCheckIn: (checkIn: DailyCheckInState) => void;
+  onSaveCheckIn: (checkIn: DailyCheckInState) => Promise<void>;
   onToggleRoutine: (routineId: string) => void;
   onNavigate: (tab: NavigationTab) => void;
   onQuickStartJournal: (text: string, mood?: MoodType) => void;
@@ -72,6 +74,9 @@ export const TodayView: React.FC<TodayViewProps> = ({
     todayCheckIn?.notes || ""
   );
   const [checkInSavedNotice, setCheckInSavedNotice] = useState(false);
+  const [checkInSaveError, setCheckInSaveError] = useState<string | null>(null);
+  const [isSavingCheckIn, setIsSavingCheckIn] = useState(false);
+  const [pendingCheckIn, setPendingCheckIn] = useState<DailyCheckInState | null>(null);
   const [quickJournalText, setQuickJournalText] = useState("");
 
   // Sync state when incoming todayCheckIn updates
@@ -92,7 +97,26 @@ export const TodayView: React.FC<TodayViewProps> = ({
     day: "numeric",
   });
 
-  const handleCheckInSubmit = (e: React.FormEvent) => {
+  const saveCheckIn = async (checkIn: DailyCheckInState) => {
+    setPendingCheckIn(checkIn);
+    setCheckInSaveError(null);
+    setCheckInSavedNotice(false);
+    setIsSavingCheckIn(true);
+    try {
+      await onSaveCheckIn(checkIn);
+      setPendingCheckIn(null);
+      setCheckInSavedNotice(true);
+      setTimeout(() => setCheckInSavedNotice(false), 2500);
+    } catch {
+      setCheckInSaveError(
+        "Cloud sync failed. Your check-in is still on this device; retry when your connection and sign-in are available."
+      );
+    } finally {
+      setIsSavingCheckIn(false);
+    }
+  };
+
+  const handleCheckInSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const checkIn: DailyCheckInState = {
       date: todayStr,
@@ -102,9 +126,7 @@ export const TodayView: React.FC<TodayViewProps> = ({
       notes: checkInNotes.trim() || undefined,
       updatedAt: Date.now(),
     };
-    onSaveCheckIn(checkIn);
-    setCheckInSavedNotice(true);
-    setTimeout(() => setCheckInSavedNotice(false), 2500);
+    await saveCheckIn(checkIn);
   };
 
   const handleQuickJournalSubmit = (e: React.FormEvent) => {
@@ -176,6 +198,26 @@ export const TodayView: React.FC<TodayViewProps> = ({
               </div>
 
               <form onSubmit={handleCheckInSubmit} className="space-y-4">
+                {checkInSaveError && (
+                  <div
+                    role="alert"
+                    className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-[#B86B6B]/15 border border-[#B86B6B]/40 text-xs"
+                  >
+                    <div className="flex items-start gap-2 text-[#F3EFE8]">
+                      <AlertCircle className="w-4 h-4 text-[#B86B6B] shrink-0 mt-0.5" />
+                      <span>{checkInSaveError}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => pendingCheckIn && saveCheckIn(pendingCheckIn)}
+                      disabled={!pendingCheckIn || isSavingCheckIn}
+                      className="shrink-0 px-3 py-1.5 rounded-lg bg-[#B86B6B] text-[#F3EFE8] font-semibold disabled:opacity-50 cursor-pointer"
+                    >
+                      Retry Save
+                    </button>
+                  </div>
+                )}
+
                 {/* Mood Selector */}
                 <div>
                   <label className="block text-xs font-semibold text-[#B7AFA7] mb-2">
@@ -281,10 +323,15 @@ export const TodayView: React.FC<TodayViewProps> = ({
                   <button
                     id="btn-save-checkin"
                     type="submit"
-                    className="w-full sm:w-auto flex items-center justify-center space-x-1.5 px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] text-xs font-semibold transition-colors shrink-0 shadow-sm cursor-pointer"
+                    disabled={isSavingCheckIn}
+                    className="w-full sm:w-auto flex items-center justify-center space-x-1.5 px-4 py-2 rounded-xl bg-[#C89B3C] hover:bg-[#b98c2d] text-[#171513] text-xs font-semibold transition-colors shrink-0 shadow-sm cursor-pointer disabled:opacity-60 disabled:cursor-wait"
                   >
-                    <Check className="w-3.5 h-3.5" />
-                    <span>Record Check-In</span>
+                    {isSavingCheckIn ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Check className="w-3.5 h-3.5" />
+                    )}
+                    <span>{isSavingCheckIn ? "Saving…" : "Record Check-In"}</span>
                   </button>
                 </div>
               </form>

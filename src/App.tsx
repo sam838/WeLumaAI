@@ -52,6 +52,8 @@ import { PlannerView } from "./views/PlannerView";
 import { ProfileView } from "./views/ProfileView";
 import { CalendarModal } from "./components/CalendarModal";
 import { DailyReminderModal } from "./components/DailyReminderModal";
+import { authenticatedFetch } from "./api";
+import { clearStoredToken } from "./googleCalendar";
 
 export default function App() {
   // 1. Core State
@@ -80,6 +82,7 @@ export default function App() {
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [syncWarning, setSyncWarning] = useState<boolean>(false);
 
   // Pending save ref for retry
   const pendingSaveRef = useRef<JournalInteraction | null>(null);
@@ -146,7 +149,9 @@ export default function App() {
             id: `seed_routine_${idx}_${Date.now()}`,
             userId,
           };
-          saveRoutineToFirestore(userId, routine).catch(() => {});
+          saveRoutineToFirestore(userId, routine).catch(() => {
+            setSaveError("Default routines could not be synced. Please retry from Planner.");
+          });
         });
       } else {
         setRoutines(items);
@@ -189,7 +194,9 @@ export default function App() {
         ...currentUser.profile,
         storedPreferences: INITIAL_STORED_PREFERENCES_SEED,
       };
-      saveUserProfile(currentUser.uid, updatedProfile).catch(() => {});
+      saveUserProfile(currentUser.uid, updatedProfile).catch(() => {
+        setSaveError("Starter preferences could not be synced. Please save them again in Profile.");
+      });
     }
   }, [currentUser?.uid, currentUser?.profile]);
 
@@ -205,6 +212,7 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
+      clearStoredToken();
       await signOutUser();
       setCurrentUser(null);
       setInteractions([]);
@@ -274,12 +282,14 @@ export default function App() {
       try {
         await saveInteractionToFirestore(currentUser.uid, baseEntry);
       } catch (err: any) {
-        console.warn("Optimistic save warning:", err);
+        setSaveError(err.message || "Your journal entry could not be saved. Retry before requesting a reflection.");
+        setIsGenerating(false);
+        return;
       }
 
       try {
         // Send request to Gemini Reflect & Converse API
-        const response = await fetch("/api/gemini/reflect", {
+        const response = await authenticatedFetch("/api/gemini/reflect", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -381,7 +391,11 @@ export default function App() {
       if (!currentUser?.uid || !activeInteractionId) return;
       const target = interactions.find((it) => it.id === activeInteractionId);
       if (target) {
-        saveInteractionToFirestore(currentUser.uid, { ...target, title, updatedAt: Date.now() });
+        const updated = { ...target, title, updatedAt: Date.now() };
+        pendingSaveRef.current = updated;
+        void saveInteractionToFirestore(currentUser.uid, updated).then(() => {
+          pendingSaveRef.current = null;
+        }).catch((err: Error) => setSaveError(err.message || "Title could not be saved."));
       }
     },
     [currentUser?.uid, activeInteractionId, interactions]
@@ -392,7 +406,11 @@ export default function App() {
       if (!currentUser?.uid || !activeInteractionId) return;
       const target = interactions.find((it) => it.id === activeInteractionId);
       if (target) {
-        saveInteractionToFirestore(currentUser.uid, { ...target, mode, updatedAt: Date.now() });
+        const updated = { ...target, mode, updatedAt: Date.now() };
+        pendingSaveRef.current = updated;
+        void saveInteractionToFirestore(currentUser.uid, updated).then(() => {
+          pendingSaveRef.current = null;
+        }).catch((err: Error) => setSaveError(err.message || "Mode could not be saved."));
       }
     },
     [currentUser?.uid, activeInteractionId, interactions]
@@ -403,7 +421,11 @@ export default function App() {
       if (!currentUser?.uid || !activeInteractionId) return;
       const target = interactions.find((it) => it.id === activeInteractionId);
       if (target) {
-        saveInteractionToFirestore(currentUser.uid, { ...target, depth, updatedAt: Date.now() });
+        const updated = { ...target, depth, updatedAt: Date.now() };
+        pendingSaveRef.current = updated;
+        void saveInteractionToFirestore(currentUser.uid, updated).then(() => {
+          pendingSaveRef.current = null;
+        }).catch((err: Error) => setSaveError(err.message || "Reflection depth could not be saved."));
       }
     },
     [currentUser?.uid, activeInteractionId, interactions]
@@ -420,6 +442,7 @@ export default function App() {
         }
       } catch (err: any) {
         console.error("Delete interaction error:", err);
+        setSaveError(err.message || "Journal entry could not be deleted. Please retry.");
       }
     },
     [currentUser?.uid, activeInteractionId, interactions]
@@ -488,6 +511,8 @@ export default function App() {
       if (!currentUser?.uid) return;
       setTodayCheckIn(checkIn);
       saveLocalCheckIn(currentUser.uid, checkIn);
+      setIsSaving(true);
+      setSyncWarning(false);
       try {
         await saveCheckInToFirestore(currentUser.uid, checkIn);
         if (currentUser.profile) {
@@ -501,6 +526,10 @@ export default function App() {
         }
       } catch (err: any) {
         console.warn("Notice saving check-in to Firestore:", err);
+        setSyncWarning(true);
+        throw err;
+      } finally {
+        setIsSaving(false);
       }
     },
     [currentUser]
@@ -530,6 +559,7 @@ export default function App() {
 
   const handleDeletePreferenceItem = async (itemId: string) => {
     if (!currentUser?.uid || !currentUser.profile) return;
+    if (!window.confirm("Remove this stored preference? This affects future personalization.")) return;
     const currentList = currentUser.profile.storedPreferences || [];
     const updatedList = currentList.filter((item) => item.id !== itemId);
     const updatedProfile: UserProfile = {
@@ -591,7 +621,8 @@ export default function App() {
     try {
       await saveUserProfile(currentUser.uid, updatedProfile);
     } catch (err) {
-      console.warn("Failed to persist daily reminder toggle:", err);
+      setCurrentUser((prev) => (prev ? { ...prev, profile: currentUser.profile } : null));
+      setSaveError("Reminder change could not be saved. Please retry.");
     }
   };
 
@@ -615,7 +646,8 @@ export default function App() {
     try {
       await saveUserProfile(currentUser.uid, updatedProfile);
     } catch (err) {
-      console.warn("Failed to persist daily reminder update:", err);
+      setCurrentUser((prev) => (prev ? { ...prev, profile: currentUser.profile } : null));
+      setSaveError("Reminder settings could not be saved. Please retry.");
     }
   };
 
@@ -665,7 +697,9 @@ export default function App() {
           updatedAt: Date.now(),
         };
         setCurrentUser((prev) => (prev ? { ...prev, profile: updatedProfile } : null));
-        saveUserProfile(currentUser.uid, updatedProfile).catch(() => {});
+        saveUserProfile(currentUser.uid, updatedProfile).catch(() => {
+          setSaveError("Reminder notification state could not be synced.");
+        });
       }
     };
 
@@ -720,7 +754,7 @@ export default function App() {
         onOpenCalendarModal={() => setCalendarModalOpen(true)}
         onToggleDailyReminder={handleToggleDailyReminder}
         onOpenReminderModal={() => setReminderModalOpen(true)}
-        syncStatus={isSaving ? "saving" : saveError ? "error" : "synced"}
+        syncStatus={isSaving ? "saving" : saveError || syncWarning ? "error" : "synced"}
       />
 
       {/* Responsive Navigation */}

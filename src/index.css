@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  --font-serif: Georgia, "Times New Roman", ui-serif, serif;
   --color-app-bg: #171513;
   --color-app-surface: #211E1B;
   --color-app-surface-hover: #2c2723;
@@ -37,6 +39,7 @@ html, body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
+  font-family: var(--font-sans);
 }
 
 body {

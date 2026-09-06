@@ -29,6 +29,7 @@ import {
   createGoogleCalendarEvent,
   requestGoogleCalendarAuth,
 } from "../googleCalendar";
+import { authenticatedFetch } from "../api";
 
 interface AiCalendarRecommenderProps {
   user: AuthUserState;
@@ -109,7 +110,7 @@ export const AiCalendarRecommender: React.FC<AiCalendarRecommenderProps> = ({
     setErrorMessage(null);
 
     try {
-      const response = await fetch("/api/gemini/recommend-activities", {
+      const response = await authenticatedFetch("/api/gemini/recommend-activities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -25,9 +25,6 @@ export async function getMapsApiKey(): Promise<{ key: string | null; source: str
   if (process.env.GOOGLE_MAPS_API_KEY && process.env.GOOGLE_MAPS_API_KEY.trim()) {
     return { key: process.env.GOOGLE_MAPS_API_KEY.trim(), source: "env_var (GOOGLE_MAPS_API_KEY)" };
   }
-  if (process.env.VITE_GOOGLE_MAPS_API_KEY && process.env.VITE_GOOGLE_MAPS_API_KEY.trim()) {
-    return { key: process.env.VITE_GOOGLE_MAPS_API_KEY.trim(), source: "env_var (VITE_GOOGLE_MAPS_API_KEY)" };
-  }
 
   // 2. Check cached key
   const now = Date.now();
@@ -38,9 +35,14 @@ export async function getMapsApiKey(): Promise<{ key: string | null; source: str
   // 3. Attempt Secret Manager lookup
   const secretNames = ["GOOGLE_MAPS_API_KEY", "Google_Maps_Api_Key", "Maps_Api_Key", "MAPS_API_KEY"];
   const projectId =
+    process.env.GOOGLE_CLOUD_PROJECT ||
+    process.env.GCLOUD_PROJECT ||
     process.env.GCP_PROJECT_ID ||
-    process.env.VITE_FIREBASE_PROJECT_ID ||
-    "gen-lang-client-0928742113";
+    process.env.VITE_FIREBASE_PROJECT_ID;
+
+  if (!projectId) {
+    return { key: null, source: "none" };
+  }
 
   try {
     const client = getSecretClient();
@@ -62,11 +64,6 @@ export async function getMapsApiKey(): Promise<{ key: string | null; source: str
     }
   } catch (err: any) {
     // Secret Manager check completed
-  }
-
-  // 4. Fallback to Firebase API key if present (often shares GCP project permissions)
-  if (process.env.VITE_FIREBASE_API_KEY && process.env.VITE_FIREBASE_API_KEY.trim()) {
-    return { key: process.env.VITE_FIREBASE_API_KEY.trim(), source: "env_var (VITE_FIREBASE_API_KEY)" };
   }
 
   return { key: null, source: "none" };
@@ -101,19 +98,6 @@ export async function geocodeLocation(
   address: string,
   apiKey: string
 ): Promise<{ latitude: number; longitude: number; formattedAddress: string } | null> {
-  const normalized = address.toLowerCase().trim();
-
-  // Known reference coordinates for fast resolution
-  if (normalized.includes("east surabaya") || normalized.includes("surabaya timur")) {
-    return { latitude: -7.2800, longitude: 112.7800, formattedAddress: "East Surabaya, East Java, Indonesia" };
-  }
-  if (normalized === "surabaya" || normalized.includes("surabaya")) {
-    return { latitude: -7.2575, longitude: 112.7521, formattedAddress: "Surabaya, East Java, Indonesia" };
-  }
-  if (normalized.includes("jakarta")) {
-    return { latitude: -6.2088, longitude: 106.8456, formattedAddress: "Jakarta, Indonesia" };
-  }
-
   try {
     const url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(
       address
@@ -139,153 +123,6 @@ export async function geocodeLocation(
 }
 
 /**
- * Curated reference places for fallback when Google Cloud project has places.googleapis.com blocked/pending activation
- */
-function getCuratedPlacesFallback(
-  query: string,
-  userLat: number,
-  userLng: number,
-  locationName: string
-): RecommendedPlace[] {
-  const q = query.toLowerCase();
-
-  if (q.includes("swim") || q.includes("pool") || q.includes("renang")) {
-    const rawList = [
-      {
-        id: "surabaya_pool_manyar",
-        name: "Kolam Renang Manyar (Manyar Swimming Pool)",
-        formattedAddress: "Jl. Raya Manyar No. 80, Baratajaya, Gubeng, Surabaya, East Java",
-        latitude: -7.2835,
-        longitude: 112.7668,
-        rating: 4.5,
-        userRatingCount: 1820,
-        googleMapsUri: "https://www.google.com/maps/search/?api=1&query=Kolam+Renang+Manyar+Surabaya",
-        openNow: true,
-      },
-      {
-        id: "surabaya_pool_atlas",
-        name: "Atlas Sports Club Swimming Complex",
-        formattedAddress: "Jl. Dharmahusada Indah Barat III No. 64-66, Mojo, Gubeng, Surabaya, East Java",
-        latitude: -7.2721,
-        longitude: 112.7785,
-        rating: 4.6,
-        userRatingCount: 3450,
-        googleMapsUri: "https://www.google.com/maps/search/?api=1&query=Atlas+Sports+Club+Surabaya",
-        openNow: true,
-      },
-      {
-        id: "surabaya_pool_koni",
-        name: "Kolam Renang KONI Jatim",
-        formattedAddress: "Jl. Kertajaya Indah Timur No. 4, Manyar Sabrangan, Mulyorejo, Surabaya, East Java",
-        latitude: -7.2858,
-        longitude: 112.7885,
-        rating: 4.4,
-        userRatingCount: 1240,
-        googleMapsUri: "https://www.google.com/maps/search/?api=1&query=Kolam+Renang+KONI+Jatim+Surabaya",
-        openNow: true,
-      },
-      {
-        id: "surabaya_pool_galaxy",
-        name: "Galaxy Pool Club Surabaya",
-        formattedAddress: "Jl. Kertajaya Indah Timur Blok G No. 1, Gebang Putih, Sukolilo, Surabaya, East Java",
-        latitude: -7.2890,
-        longitude: 112.7950,
-        rating: 4.3,
-        userRatingCount: 890,
-        googleMapsUri: "https://www.google.com/maps/search/?api=1&query=Galaxy+Pool+Club+Surabaya",
-        openNow: true,
-      },
-      {
-        id: "surabaya_pool_plasa_marina",
-        name: "Waterpark & Swimming Plaza Marina",
-        formattedAddress: "Jl. Raya Margorejo Indah No. 97-99, Wonocolo, Surabaya, East Java",
-        latitude: -7.3175,
-        longitude: 112.7482,
-        rating: 4.2,
-        userRatingCount: 1540,
-        googleMapsUri: "https://www.google.com/maps/search/?api=1&query=Swimming+Plaza+Marina+Surabaya",
-        openNow: true,
-      },
-    ];
-
-    return rawList
-      .map((p) => {
-        const dist = calculateDistanceKm(userLat, userLng, p.latitude, p.longitude);
-        return {
-          ...p,
-          distanceKm: dist,
-          distanceFormatted: `${dist} km away`,
-        };
-      })
-      .sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0))
-      .slice(0, 4);
-  }
-
-  // Generic wellness/sports fallback
-  const rawVenues = [
-    {
-      id: "venue_1",
-      name: `${query.charAt(0).toUpperCase() + query.slice(1)} Center East`,
-      formattedAddress: `${locationName || "East Surabaya"}, East Java`,
-      latitude: userLat + 0.012,
-      longitude: userLng + 0.014,
-      rating: 4.5,
-      userRatingCount: 520,
-      googleMapsUri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + " " + locationName)}`,
-      openNow: true,
-    },
-    {
-      id: "venue_2",
-      name: `${locationName || "East"} Community Sports & ${query.charAt(0).toUpperCase() + query.slice(1)} Arena`,
-      formattedAddress: `Jl. Dharmahusada, ${locationName || "East Surabaya"}, East Java`,
-      latitude: userLat + 0.021,
-      longitude: userLng + 0.024,
-      rating: 4.4,
-      userRatingCount: 310,
-      googleMapsUri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + " " + locationName)}`,
-      openNow: true,
-    },
-    {
-      id: "venue_3",
-      name: `Grand ${query.charAt(0).toUpperCase() + query.slice(1)} Complex`,
-      formattedAddress: `Jl. Kertajaya Indah, ${locationName || "East Surabaya"}, East Java`,
-      latitude: userLat + 0.032,
-      longitude: userLng + 0.028,
-      rating: 4.3,
-      userRatingCount: 240,
-      googleMapsUri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + " " + locationName)}`,
-      openNow: true,
-    },
-    {
-      id: "venue_4",
-      name: `Metropolitan ${query.charAt(0).toUpperCase() + query.slice(1)} Hub`,
-      formattedAddress: `Jl. Raya Manyar, ${locationName || "East Surabaya"}, East Java`,
-      latitude: userLat + 0.045,
-      longitude: userLng + 0.039,
-      rating: 4.2,
-      userRatingCount: 180,
-      googleMapsUri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + " " + locationName)}`,
-      openNow: true,
-    },
-  ];
-
-  return rawVenues
-    .map((p) => {
-      const dist = calculateDistanceKm(userLat, userLng, p.latitude, p.longitude);
-      return {
-        ...p,
-        address: p.formattedAddress,
-        googleMapsUrl: p.googleMapsUri,
-        userRatingsTotal: p.userRatingCount,
-        distanceKm: dist,
-        distanceFormatted: `${dist} km away`,
-      };
-    })
-    .sort((a, b) => (a.distanceKm || 0) - (b.distanceKm || 0))
-    .slice(0, 4);
-}
-
-/**
  * Search nearby places using Google Places API (New) - Text Search
  * Returns 3-4 nearest places sorted by distance (nearest to furthest)
  */
@@ -299,12 +136,16 @@ export async function searchNearbyPlaces(params: {
 }): Promise<{
   places: RecommendedPlace[];
   userLocation: { latitude: number; longitude: number; address: string };
-  source: "places_api_new" | "curated_fallback";
-  apiStatus: "active" | "blocked_or_unactivated" | "no_key";
+  source: "places_api_new";
+  apiStatus: "active";
   guidance?: string;
 }> {
-  const { query, locationName = "East Surabaya", radiusMeters = 15000, maxResults = 4 } = params;
-  const { key, source: keySource } = await getMapsApiKey();
+  const { query, locationName = "", radiusMeters = 15000, maxResults = 4 } = params;
+  const { key } = await getMapsApiKey();
+
+  if (!key) {
+    throw new Error("Google Maps is not configured.");
+  }
 
   // Resolve user coordinates
   let userLat = params.latitude;
@@ -312,36 +153,22 @@ export async function searchNearbyPlaces(params: {
   let resolvedAddress = locationName;
 
   if (userLat === undefined || userLng === undefined) {
-    if (key) {
-      const geocoded = await geocodeLocation(locationName, key);
-      if (geocoded) {
-        userLat = geocoded.latitude;
-        userLng = geocoded.longitude;
-        resolvedAddress = geocoded.formattedAddress;
-      }
+    if (!locationName.trim()) {
+      throw new Error("Location permission or a location name is required.");
+    }
+    const geocoded = await geocodeLocation(locationName, key);
+    if (geocoded) {
+      userLat = geocoded.latitude;
+      userLng = geocoded.longitude;
+      resolvedAddress = geocoded.formattedAddress;
     }
   }
 
-  // Default coordinate fallback if unresolvable (e.g. East Surabaya center: -7.2800, 112.7800)
   if (userLat === undefined || userLng === undefined) {
-    userLat = -7.2800;
-    userLng = 112.7800;
-    resolvedAddress = "East Surabaya, East Java, Indonesia";
+    throw new Error("The supplied location could not be verified with Google Maps.");
   }
 
   const userLocation = { latitude: userLat, longitude: userLng, address: resolvedAddress };
-
-  if (!key) {
-    const fallback = getCuratedPlacesFallback(query, userLat, userLng, locationName);
-    return {
-      places: fallback.slice(0, maxResults),
-      userLocation,
-      source: "curated_fallback",
-      apiStatus: "no_key",
-      guidance:
-        "No Google Maps API key found. Add GOOGLE_MAPS_API_KEY to your environment, or generate a free Maps Demo Key at https://mapsplatform.google.com/maps-demo-key?utm_campaign=gmp_mcp_codeassist_v1_aistudio",
-    };
-  }
 
   // Call Google Places API (New) Text Search
   try {
@@ -434,27 +261,11 @@ export async function searchNearbyPlaces(params: {
 
       console.warn(`[Places API] Request rejected: ${reason}`, errorData?.error?.message);
 
-      const fallback = getCuratedPlacesFallback(query, userLat, userLng, locationName);
-      return {
-        places: fallback.slice(0, maxResults),
-        userLocation,
-        source: "curated_fallback",
-        apiStatus: "blocked_or_unactivated",
-        guidance: `Google Places API returned ${reason}. To activate: In Google Cloud Console or Cloud Shell, run 'gcloud services enable places.googleapis.com --project gen-lang-client-0928742113' or create a Maps Demo Key at https://mapsplatform.google.com/maps-demo-key?utm_campaign=gmp_mcp_codeassist_v1_aistudio`,
-      };
+      throw new Error(`Google Places request failed with status ${reason}.`);
     }
   } catch (error: any) {
     console.error("[Places API] Network/Execution error:", error);
   }
 
-  // Graceful fallback
-  const fallback = getCuratedPlacesFallback(query, userLat, userLng, locationName);
-  return {
-    places: fallback.slice(0, maxResults),
-    userLocation,
-    source: "curated_fallback",
-    apiStatus: "blocked_or_unactivated",
-    guidance:
-      "Unable to reach Google Places API. Showing verified nearby locations sorted from nearest to furthest.",
-  };
+  throw new Error("Unable to reach Google Places API.");
 }

@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { UserProfile, AuthUserState, WellbeingDomain } from "../types";
 import { saveUserProfile } from "../firebase";
-import { Sparkles, ArrowRight, Heart, Compass, Check } from "lucide-react";
+import { ArrowRight, Heart, Check, AlertCircle } from "lucide-react";
 import { motion } from "motion/react";
 
 interface OnboardingModalProps {
@@ -48,6 +48,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   ]);
   const [spiritualBeliefs, setSpiritualBeliefs] = useState<string>("");
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const toggleItem = (
     item: string,
@@ -61,15 +62,24 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
     }
   };
 
-  const handleSkip = () => {
+  const handleSkip = async () => {
+    if (isSubmitting) return;
+    setIsSubmitting(true);
+    setSaveError(null);
     const defaultProfile: UserProfile = {
       name: user.displayName || "Wellbeing Explorer",
       onboardingCompleted: true,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    saveUserProfile(user.uid, defaultProfile).catch(() => {});
-    onComplete(defaultProfile);
+    try {
+      await saveUserProfile(user.uid, defaultProfile);
+      onComplete(defaultProfile);
+    } catch {
+      setSaveError("Your onboarding choice could not be saved. Check your connection and retry.");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -91,7 +101,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
       await saveUserProfile(user.uid, profile);
       onComplete(profile);
     } catch {
-      handleSkip();
+      setSaveError("Your preferences could not be saved. Nothing was cleared; please retry.");
     } finally {
       setIsSubmitting(false);
     }
@@ -100,7 +110,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   React.useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        handleSkip();
+        void handleSkip();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -110,7 +120,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
   return (
     <div
       className="fixed inset-0 z-50 overflow-y-auto bg-black/85 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 py-8"
-      onClick={handleSkip}
+      onClick={() => void handleSkip()}
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
@@ -138,6 +148,13 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
         </p>
 
         <form onSubmit={handleSubmit} className="space-y-5">
+          {saveError && (
+            <div role="alert" className="flex items-center gap-2 rounded-xl border border-[#B86B6B]/50 bg-[#B86B6B]/15 p-3 text-xs text-[#E7A3A3]">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span className="flex-1">{saveError}</span>
+              <button type="submit" disabled={isSubmitting} className="rounded-lg border border-current px-2 py-1 font-semibold">Retry Save</button>
+            </div>
+          )}
           {/* Primary Intentions & Goals */}
           <div className="space-y-2">
             <label className="block text-xs font-semibold uppercase tracking-wider text-[#C89B3C]">
@@ -214,7 +231,7 @@ export const OnboardingModal: React.FC<OnboardingModalProps> = ({
             <button
               id="btn-skip-onboarding"
               type="button"
-              onClick={handleSkip}
+              onClick={() => void handleSkip()}
               className="text-xs text-[#B7AFA7] hover:text-[#F3EFE8] underline cursor-pointer"
             >
               Skip for now

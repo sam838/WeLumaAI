@@ -124,7 +124,7 @@ export async function getGeminiApiKey(): Promise<SecretRetrievalResult> {
         const secretVal = version.payload?.data?.toString("utf8")?.trim();
 
         if (secretVal && secretVal.length > 0) {
-          console.log(`[SecretManager] Successfully retrieved Gemini API key from ${fullSecretPath}`);
+          console.info("[SecretManager] Gemini credential loaded successfully.");
           cachedSecret = secretVal;
           cachedSource = "secret_manager";
           cachedPath = fullSecretPath;
@@ -137,7 +137,7 @@ export async function getGeminiApiKey(): Promise<SecretRetrievalResult> {
         }
       } catch (err: any) {
         const msg = err?.message || String(err);
-        secretManagerError = `Path ${fullSecretPath}: ${msg}`;
+        secretManagerError = msg.replace(/projects\/[\w.-]+\/secrets\/[\w.-]+\/versions\/[\w.-]+/g, "[secret reference]");
       }
     }
   }

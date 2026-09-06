@@ -14,7 +14,6 @@ import {
   Layers,
   FileJson,
   Key,
-  RefreshCw,
   Sun,
   Moon,
 } from "lucide-react";
@@ -30,8 +29,8 @@ interface ProfileViewProps {
   user: AuthUserState;
   onUpdateUser: (updatedUser: AuthUserState) => void;
   onSignOut: () => void;
-  onDeletePreferenceItem?: (id: string) => void;
-  onAddPreferenceItem?: (item: StoredPreferenceItem) => void;
+  onDeletePreferenceItem?: (id: string) => Promise<void>;
+  onAddPreferenceItem?: (item: StoredPreferenceItem) => Promise<void>;
 }
 
 const GOAL_OPTIONS = [
@@ -103,11 +102,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   // Secret Manager runtime status
   const [secretStatus, setSecretStatus] = useState<{
     configured?: boolean;
-    source?: "secret_manager" | "env_var" | "none";
-    secretPath?: string;
-    advice?: string;
   } | null>(null);
-  const [isRefreshingSecret, setIsRefreshingSecret] = useState(false);
 
   const fetchSecretStatus = async () => {
     try {
@@ -116,9 +111,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
         const data = await res.json();
         setSecretStatus({
           configured: data.geminiConfigured,
-          source: data.secretManager?.source,
-          secretPath: data.secretManager?.secretPath,
-          advice: data.secretManager?.advice,
         });
       }
     } catch {
@@ -129,18 +121,6 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
   useEffect(() => {
     fetchSecretStatus();
   }, []);
-
-  const handleRefreshSecret = async () => {
-    setIsRefreshingSecret(true);
-    try {
-      await fetch("/api/secret/refresh", { method: "POST" });
-      await fetchSecretStatus();
-    } catch {
-      // quiet
-    } finally {
-      setIsRefreshingSecret(false);
-    }
-  };
 
   const toggleSelection = (
     item: string,
@@ -539,7 +519,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                 {/* Add New Preference Item */}
                 {onAddPreferenceItem && (
                   <form
-                    onSubmit={(e) => {
+                    onSubmit={async (e) => {
                       e.preventDefault();
                       if (!newPrefLabel.trim() || !newPrefValue.trim()) return;
                       const item: StoredPreferenceItem = {
@@ -552,9 +532,14 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         createdAt: Date.now(),
                         updatedAt: Date.now(),
                       };
-                      onAddPreferenceItem(item);
-                      setNewPrefLabel("");
-                      setNewPrefValue("");
+                      setSaveError(null);
+                      try {
+                        await onAddPreferenceItem(item);
+                        setNewPrefLabel("");
+                        setNewPrefValue("");
+                      } catch (error) {
+                        setSaveError(error instanceof Error ? error.message : "Preference could not be saved. Please retry.");
+                      }
                     }}
                     className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] space-y-3"
                   >
@@ -650,7 +635,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         {onDeletePreferenceItem && (
                           <button
                             type="button"
-                            onClick={() => onDeletePreferenceItem(item.id)}
+                            onClick={() => void onDeletePreferenceItem(item.id).catch((error) => setSaveError(error instanceof Error ? error.message : "Preference could not be deleted. Please retry."))}
                             className="text-[#B86B6B] hover:text-white p-1 text-xs cursor-pointer"
                             title="Delete memory"
                           >
@@ -695,47 +680,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
                         Google Secret Manager Integration
                       </h3>
                     </div>
-                    <div className="flex items-center space-x-2">
-                      <span
-                        className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                          secretStatus?.source === "secret_manager"
-                            ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
-                            : secretStatus?.source === "env_var"
-                            ? "bg-amber-950/60 border-amber-800 text-amber-300"
-                            : "bg-rose-950/60 border-rose-800 text-rose-300"
-                        }`}
-                      >
-                        {secretStatus?.source === "secret_manager"
-                          ? "Secret Manager (Active)"
-                          : secretStatus?.source === "env_var"
-                          ? "Environment Variable Fallback"
-                          : "Unconfigured"}
-                      </span>
-                      <button
-                        id="btn-refresh-secret-status"
-                        type="button"
-                        onClick={handleRefreshSecret}
-                        disabled={isRefreshingSecret}
-                        className="p-1 text-[#B7AFA7] hover:text-[#F3EFE8] rounded-lg hover:bg-[#211E1B] transition-colors cursor-pointer"
-                        title="Re-query Secret Manager"
-                      >
-                        <RefreshCw
-                          className={`w-3.5 h-3.5 ${
-                            isRefreshingSecret ? "animate-spin text-[#C89B3C]" : ""
-                          }`}
-                        />
-                      </button>
-                    </div>
+                    <span
+                      className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                        secretStatus?.configured
+                          ? "bg-emerald-950/60 border-emerald-800 text-emerald-300"
+                          : "bg-rose-950/60 border-rose-800 text-rose-300"
+                      }`}
+                    >
+                      {secretStatus?.configured ? "AI Service Available" : "AI Service Unavailable"}
+                    </span>
                   </div>
                   <p className="text-[11px] leading-relaxed text-[#B7AFA7]">
-                    {secretStatus?.advice ||
-                      "The backend dynamically polls Google Cloud Secret Manager for 'Gemini_Api_Key' and 'GEMINI_API_KEY' with secure in-memory caching and automatic fallback."}
+                    Operational credentials are handled only by the backend and are never exposed to this browser.
                   </p>
-                  {secretStatus?.secretPath && (
-                    <div className="text-[10px] font-mono text-[#7A746E] truncate">
-                      Source: {secretStatus.secretPath}
-                    </div>
-                  )}
                 </div>
 
                 <div className="p-4 bg-[#171513] rounded-2xl border border-[#38322D] flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
@@ -782,9 +739,12 @@ export const ProfileView: React.FC<ProfileViewProps> = ({
 
           {/* Feedback & Save Bar */}
           {saveError && (
-            <div className="p-3 bg-[#B86B6B]/20 border border-[#B86B6B]/50 rounded-2xl text-xs text-[#B86B6B] flex items-center space-x-2">
+            <div role="alert" className="p-3 bg-[#B86B6B]/20 border border-[#B86B6B]/50 rounded-2xl text-xs text-[#B86B6B] flex items-center gap-2">
               <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{saveError}</span>
+              <span className="flex-1">{saveError}</span>
+              <button type="submit" disabled={isSaving} className="rounded-lg border border-current px-2.5 py-1 font-semibold hover:bg-[#B86B6B]/10 disabled:opacity-50">
+                Retry Save
+              </button>
             </div>
           )}
 

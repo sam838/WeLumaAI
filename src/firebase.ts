@@ -21,6 +21,7 @@ import {
   Unsubscribe,
   getDocFromServer,
   getDoc,
+  writeBatch,
 } from "firebase/firestore";
 import {
   AuthUserState,
@@ -31,6 +32,8 @@ import {
   DailyCheckInState,
   CheckInStats,
 } from "./types";
+import { sanitizeFirestorePayload } from "./utils/firestorePayload";
+export { sanitizeFirestorePayload } from "./utils/firestorePayload";
 
 export enum OperationType {
   CREATE = "create",
@@ -44,18 +47,6 @@ export enum OperationType {
 export interface FirestoreErrorInfo {
   error: string;
   operationType: OperationType;
-  path: string | null;
-  authInfo: {
-    userId?: string | null;
-    email?: string | null;
-    emailVerified?: boolean | null;
-    isAnonymous?: boolean | null;
-    tenantId?: string | null;
-    providerInfo?: {
-      providerId?: string | null;
-      email?: string | null;
-    }[];
-  };
 }
 
 // Configuration is resolved exclusively from environment variables (.env via import.meta.env)
@@ -109,26 +100,13 @@ googleProvider.setCustomParameters({
   prompt: "select_account",
 });
 
-export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null): never {
+export function handleFirestoreError(error: unknown, operationType: OperationType, _path: string | null): never {
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
-    authInfo: {
-      userId: auth?.currentUser?.uid,
-      email: auth?.currentUser?.email,
-      emailVerified: auth?.currentUser?.emailVerified,
-      isAnonymous: auth?.currentUser?.isAnonymous,
-      tenantId: auth?.currentUser?.tenantId,
-      providerInfo:
-        auth?.currentUser?.providerData?.map((provider) => ({
-          providerId: provider.providerId,
-          email: provider.email,
-        })) || [],
-    },
+    error: error instanceof Error && "code" in error ? String((error as { code?: unknown }).code || "unknown") : "unknown",
     operationType,
-    path,
   };
-  console.error("Firestore Error: ", JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.error("Firestore operation failed:", errInfo);
+  throw new Error("A cloud data operation failed. Please retry.");
 }
 
 // Test connection if configured
@@ -149,13 +127,14 @@ if (isFirebaseConfigured && db) {
 /**
  * Strict Undefined-Stripping (Zero-Crash Payload Hygiene)
  */
-export function sanitizeFirestorePayload<T>(data: T): T {
-  if (data === null || data === undefined) {
-    return data;
+function requireVerifiedOwner(userId: string): void {
+  if (!isFirebaseConfigured || !db) {
+    throw new Error("Cloud sync is unavailable. Please check the Firebase configuration.");
   }
-  return JSON.parse(
-    JSON.stringify(data, (_key, val) => (val === undefined ? null : val))
-  );
+  const current = auth?.currentUser;
+  if (!current || current.isAnonymous || current.uid !== userId) {
+    throw new Error("Your Firebase session is not ready. Please sign in again.");
+  }
 }
 
 // Local Storage Keys
@@ -235,7 +214,8 @@ export async function signOutUser(): Promise<void> {
 }
 
 export function mapFirebaseUser(user: User | null): AuthUserState | null {
-  if (!user || user.isAnonymous) return null;
+  const usesGoogle = user?.providerData.some((provider) => provider.providerId === "google.com");
+  if (!user || user.isAnonymous || !user.emailVerified || !usesGoogle) return null;
   return {
     uid: user.uid,
     displayName: user.displayName || "Mindful Member",
@@ -246,20 +226,11 @@ export function mapFirebaseUser(user: User | null): AuthUserState | null {
 }
 
 export function subscribeAuthState(callback: (user: AuthUserState | null) => void): Unsubscribe {
-  // Clear any stale anonymous or sandbox user from previous sessions
-  const localUser = getLocalUser();
-  if (localUser) {
-    if (localUser.isAnonymous || localUser.uid?.startsWith("sandbox_")) {
-      setLocalUser(null);
-      callback(null);
-    } else {
-      getUserProfile(localUser.uid).then((profile) => {
-        callback({ ...localUser, profile });
-      });
-    }
-  }
-
   if (!isFirebaseConfigured || !auth) {
+    // A cached profile is never proof of authentication. Fail closed when
+    // Firebase Auth is unavailable so private local data is not exposed.
+    setLocalUser(null);
+    callback(null);
     return () => {};
   }
 
@@ -287,14 +258,7 @@ export function subscribeAuthState(callback: (user: AuthUserState | null) => voi
 
 export async function getUserProfile(userId: string): Promise<UserProfile | null> {
   if (!userId) return null;
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
-    try {
-      const raw = localStorage.getItem(`profile_${userId}`);
-      return raw ? JSON.parse(raw) : null;
-    } catch {
-      return null;
-    }
-  }
+  requireVerifiedOwner(userId);
 
   try {
     const snap = await getDoc(doc(db, "users", userId));
@@ -314,7 +278,8 @@ export async function getUserProfile(userId: string): Promise<UserProfile | null
 }
 
 export async function saveUserProfile(userId: string, profile: UserProfile): Promise<void> {
-  if (!userId) return;
+  if (!userId) throw new Error("Cannot save profile without a user ID.");
+  requireVerifiedOwner(userId);
 
   try {
     localStorage.setItem(`profile_${userId}`, JSON.stringify(profile));
@@ -322,13 +287,12 @@ export async function saveUserProfile(userId: string, profile: UserProfile): Pro
     console.warn("Local profile save notice:", e);
   }
 
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
-
   const sanitized = sanitizeFirestorePayload(profile);
   try {
     await setDoc(doc(db, "users", userId), sanitized, { merge: true });
   } catch (err) {
     console.warn("Firestore saveUserProfile error:", err);
+    throw err;
   }
 }
 
@@ -341,14 +305,10 @@ export async function updateUserProfileAndAccount(
   }
 ): Promise<AuthUserState> {
   if (auth?.currentUser && auth.currentUser.uid === userId) {
-    try {
-      await updateProfile(auth.currentUser, {
-        displayName: updates.displayName || auth.currentUser.displayName,
-        photoURL: updates.photoURL !== undefined ? updates.photoURL : auth.currentUser.photoURL,
-      });
-    } catch (e) {
-      console.warn("Could not update auth profile:", e);
-    }
+    await updateProfile(auth.currentUser, {
+      displayName: updates.displayName || auth.currentUser.displayName,
+      photoURL: updates.photoURL !== undefined ? updates.photoURL : auth.currentUser.photoURL,
+    });
   }
 
   const profileWithMeta: UserProfile = {
@@ -425,10 +385,9 @@ export async function saveInteractionToFirestore(
   if (!userId || !interaction.id) {
     throw new Error("Cannot save interaction: missing userId or interaction id.");
   }
+  requireVerifiedOwner(userId);
 
   saveLocalEntry(userId, interaction);
-
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
 
   const sanitized = sanitizeFirestorePayload({
     ...interaction,
@@ -441,6 +400,7 @@ export async function saveInteractionToFirestore(
     await setDoc(docRef, sanitized, { merge: true });
   } catch (err) {
     console.warn("Firestore setDoc notice, saved locally:", err);
+    throw err;
   }
 }
 
@@ -448,17 +408,16 @@ export async function deleteInteractionFromFirestore(
   userId: string,
   interactionId: string
 ): Promise<void> {
-  if (!userId || !interactionId) return;
-
-  deleteLocalEntry(userId, interactionId);
-
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
+  if (!userId || !interactionId) throw new Error("Cannot delete an incomplete journal entry reference.");
+  requireVerifiedOwner(userId);
 
   const docRef = doc(db, "users", userId, "interactions", interactionId);
   try {
     await deleteDoc(docRef);
+    deleteLocalEntry(userId, interactionId);
   } catch (err) {
     console.warn("Firestore deleteDoc notice:", err);
+    throw err;
   }
 }
 
@@ -472,18 +431,12 @@ export function subscribeUserInteractions(
     return () => {};
   }
 
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
-    const local = getLocalEntries(userId);
-    local.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-    onData(local);
-
-    const onStorageChange = () => {
-      const updated = getLocalEntries(userId);
-      updated.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
-      onData(updated);
-    };
-    window.addEventListener("storage", onStorageChange);
-    return () => window.removeEventListener("storage", onStorageChange);
+  try {
+    requireVerifiedOwner(userId);
+  } catch (error) {
+    onData([]);
+    onError?.(error instanceof Error ? error : new Error("Authentication required."));
+    return () => {};
   }
 
   const interactionsRef = collection(db, "users", userId, "interactions");
@@ -556,10 +509,9 @@ export async function saveRoutineToFirestore(
   routine: WellbeingRoutine
 ): Promise<void> {
   if (!userId || !routine.id) throw new Error("Missing userId or routineId");
+  requireVerifiedOwner(userId);
 
   saveLocalRoutine(userId, routine);
-
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
 
   const sanitized = sanitizeFirestorePayload({
     ...routine,
@@ -572,6 +524,7 @@ export async function saveRoutineToFirestore(
     await setDoc(docRef, sanitized, { merge: true });
   } catch (err) {
     console.warn("Firestore saveRoutine note:", err);
+    throw err;
   }
 }
 
@@ -579,17 +532,16 @@ export async function deleteRoutineFromFirestore(
   userId: string,
   routineId: string
 ): Promise<void> {
-  if (!userId || !routineId) return;
-
-  deleteLocalRoutine(userId, routineId);
-
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
+  if (!userId || !routineId) throw new Error("Missing userId or routineId");
+  requireVerifiedOwner(userId);
 
   const docRef = doc(db, "users", userId, "routines", routineId);
   try {
     await deleteDoc(docRef);
+    deleteLocalRoutine(userId, routineId);
   } catch (err) {
     console.warn("Firestore deleteRoutine note:", err);
+    throw err;
   }
 }
 
@@ -602,14 +554,11 @@ export function subscribeUserRoutines(
     return () => {};
   }
 
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
-    const local = getLocalRoutines(userId);
-    onData(local);
-    const onStorageChange = () => {
-      onData(getLocalRoutines(userId));
-    };
-    window.addEventListener("storage", onStorageChange);
-    return () => window.removeEventListener("storage", onStorageChange);
+  try {
+    requireVerifiedOwner(userId);
+  } catch {
+    onData([]);
+    return () => {};
   }
 
   const routinesRef = collection(db, "users", userId, "routines");
@@ -708,14 +657,24 @@ export async function saveCheckInToFirestore(
   // Always update local cache first
   saveLocalCheckIn(userId, checkIn);
 
-  if (!isFirebaseConfigured || !db) return;
+  if (!isFirebaseConfigured || !db) {
+    throw new Error("Cloud sync is unavailable. Your check-in remains on this device.");
+  }
+
+  const verifiedUser = auth?.currentUser;
+  if (!verifiedUser || verifiedUser.isAnonymous || verifiedUser.uid !== userId) {
+    throw new Error("Your Firebase session is not ready. Please sign in again before saving.");
+  }
 
   const sanitized = sanitizeFirestorePayload(checkIn);
   try {
-    await setDoc(doc(db, "users", userId, "checkins", checkIn.date), sanitized, { merge: true });
-    await setDoc(doc(db, "users", userId), { latestCheckIn: sanitized }, { merge: true });
+    const batch = writeBatch(db);
+    batch.set(doc(db, "users", userId, "checkins", checkIn.date), sanitized, { merge: true });
+    batch.set(doc(db, "users", userId), { latestCheckIn: sanitized }, { merge: true });
+    await batch.commit();
   } catch (err) {
     console.warn("Firestore saveCheckInToFirestore notice:", err);
+    throw err;
   }
 }
 
@@ -724,6 +683,11 @@ export async function getCheckInFromFirestore(
   date: string
 ): Promise<DailyCheckInState | null> {
   if (!userId) return null;
+  const verifiedUser = auth?.currentUser;
+  if (!verifiedUser || verifiedUser.isAnonymous || verifiedUser.uid !== userId) {
+    return null;
+  }
+
   const local = getLocalCheckIn(userId, date);
   if (!isFirebaseConfigured || !db) return local;
 
@@ -749,11 +713,17 @@ export function subscribeUserCheckIns(
     return () => {};
   }
 
+  const verifiedUser = auth?.currentUser;
+  if (!verifiedUser || verifiedUser.isAnonymous || verifiedUser.uid !== userId) {
+    onData({});
+    return () => {};
+  }
+
   // Instant render from local cache
   const localMap = getAllLocalCheckIns(userId);
   onData(localMap);
 
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
+  if (!isFirebaseConfigured || !db) {
     const onStorageChange = () => {
       onData(getAllLocalCheckIns(userId));
     };
@@ -881,10 +851,9 @@ export async function saveActivityFeedback(
   userId: string,
   activity: WellbeingActivity
 ): Promise<void> {
-  if (!userId) return;
+  if (!userId || !activity.id) throw new Error("Cannot save incomplete activity feedback.");
+  requireVerifiedOwner(userId);
   saveLocalActivity(userId, activity);
-
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) return;
 
   const sanitized = sanitizeFirestorePayload({
     ...activity,
@@ -896,6 +865,7 @@ export async function saveActivityFeedback(
     await setDoc(docRef, sanitized, { merge: true });
   } catch (err) {
     console.warn("Firestore saveActivityFeedback note:", err);
+    throw err;
   }
 }
 
@@ -908,11 +878,11 @@ export function subscribeUserActivities(
     return () => {};
   }
 
-  if (userId.startsWith("sandbox_") || !isFirebaseConfigured || !db) {
-    onData(getLocalActivities(userId));
-    const onStorageChange = () => onData(getLocalActivities(userId));
-    window.addEventListener("storage", onStorageChange);
-    return () => window.removeEventListener("storage", onStorageChange);
+  try {
+    requireVerifiedOwner(userId);
+  } catch {
+    onData([]);
+    return () => {};
   }
 
   const actRef = collection(db, "users", userId, "activities");

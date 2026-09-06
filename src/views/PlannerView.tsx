@@ -28,7 +28,7 @@ interface PlannerViewProps {
   routines: WellbeingRoutine[];
   onSaveRoutine: (routine: WellbeingRoutine) => Promise<void>;
   onDeleteRoutine: (routineId: string) => Promise<void>;
-  onToggleRoutine: (routineId: string) => void;
+  onToggleRoutine: (routineId: string) => Promise<void>;
   onNavigate: (tab: NavigationTab) => void;
   onOpenCalendarModal?: () => void;
 }
@@ -72,6 +72,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
   const [location, setLocation] = useState("Home");
   const [reminderEnabled, setReminderEnabled] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [operationError, setOperationError] = useState<string | null>(null);
 
   // Group routines
   const morningRoutines = routines.filter((r) => r.timeOfDay === "morning");
@@ -83,6 +84,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
     if (!name.trim() || isSubmitting) return;
 
     setIsSubmitting(true);
+    setOperationError(null);
     const now = Date.now();
     const newRoutine: WellbeingRoutine = {
       id: `routine_${now}_${Math.random().toString(36).slice(2, 6)}`,
@@ -105,12 +107,23 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
       await onSaveRoutine(newRoutine);
       setCreateModalOpen(false);
       setName("");
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : "Routine could not be saved. Please retry.");
     } finally {
       setIsSubmitting(false);
     }
   };
 
   const targetDeleteRoutine = routines.find((r) => r.id === deleteTargetId);
+
+  const handleToggleRoutine = async (routineId: string) => {
+    setOperationError(null);
+    try {
+      await onToggleRoutine(routineId);
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : "Routine status could not be saved. Please retry.");
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto bg-[#171513] text-[#F3EFE8] p-4 sm:p-6 lg:p-8">
@@ -139,6 +152,14 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
             <span>Create New Routine</span>
           </button>
         </div>
+
+        {operationError && (
+          <div role="alert" className="flex items-center gap-2 rounded-2xl border border-[#B86B6B]/50 bg-[#B86B6B]/15 p-3 text-xs text-[#E7A3A3]">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span className="flex-1">{operationError}</span>
+            <button type="button" onClick={() => setOperationError(null)} className="rounded-lg border border-current px-2 py-1 font-semibold">Dismiss</button>
+          </div>
+        )}
 
         {/* 2-Column Grid: Left (Time-of-day Routine Schedule) / Right (Connected Calendar Preview) */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -170,7 +191,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       className="p-3.5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-3 group"
                     >
                       <div
-                        onClick={() => onToggleRoutine(routine.id)}
+                        onClick={() => void handleToggleRoutine(routine.id)}
                         className="flex items-center space-x-3 cursor-pointer flex-1"
                       >
                         <div
@@ -254,7 +275,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       className="p-3.5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-3 group"
                     >
                       <div
-                        onClick={() => onToggleRoutine(routine.id)}
+                        onClick={() => void handleToggleRoutine(routine.id)}
                         className="flex items-center space-x-3 cursor-pointer flex-1"
                       >
                         <div
@@ -331,7 +352,7 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
                       className="p-3.5 rounded-2xl bg-[#171513] border border-[#38322D] flex items-center justify-between gap-3 group"
                     >
                       <div
-                        onClick={() => onToggleRoutine(routine.id)}
+                        onClick={() => void handleToggleRoutine(routine.id)}
                         className="flex items-center space-x-3 cursor-pointer flex-1"
                       >
                         <div
@@ -621,8 +642,13 @@ export const PlannerView: React.FC<PlannerViewProps> = ({
         itemName={targetDeleteRoutine?.name}
         onConfirm={async () => {
           if (deleteTargetId) {
-            await onDeleteRoutine(deleteTargetId);
-            setDeleteTargetId(null);
+            setOperationError(null);
+            try {
+              await onDeleteRoutine(deleteTargetId);
+              setDeleteTargetId(null);
+            } catch (error) {
+              setOperationError(error instanceof Error ? error.message : "Routine could not be deleted. Please retry.");
+            }
           }
         }}
         onClose={() => setDeleteTargetId(null)}

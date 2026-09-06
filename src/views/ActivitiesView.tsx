@@ -14,6 +14,7 @@ import {
   Search,
   Plus,
   Calendar,
+  AlertCircle,
 } from "lucide-react";
 import {
   ActivityFeedbackType,
@@ -74,6 +75,8 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"catalog" | "saved">("catalog");
   const [feedbackSuccessNotice, setFeedbackSuccessNotice] = useState<string | null>(null);
+  const [feedbackSaveError, setFeedbackSaveError] = useState<string | null>(null);
+  const [pendingFeedback, setPendingFeedback] = useState<WellbeingActivity | null>(null);
 
   // Filtered Activities
   const filteredActivities = useMemo(() => {
@@ -100,9 +103,16 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
       ...activity,
       feedback: feedbackType,
     };
-    await onSaveFeedback(updated);
-    setFeedbackSuccessNotice(`Recorded feedback for "${activity.title}".`);
-    setTimeout(() => setFeedbackSuccessNotice(null), 3000);
+    setPendingFeedback(updated);
+    setFeedbackSaveError(null);
+    try {
+      await onSaveFeedback(updated);
+      setPendingFeedback(null);
+      setFeedbackSuccessNotice(`Recorded feedback for "${activity.title}".`);
+      setTimeout(() => setFeedbackSuccessNotice(null), 3000);
+    } catch (error) {
+      setFeedbackSaveError(error instanceof Error ? error.message : "Feedback could not be saved.");
+    }
   };
 
   const handleToggleBookmark = async (activity: WellbeingActivity) => {
@@ -110,13 +120,20 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
       ...activity,
       isSaved: !activity.isSaved,
     };
-    await onSaveFeedback(updated);
-    setFeedbackSuccessNotice(
-      updated.isSaved
-        ? `Saved "${activity.title}" to your grounding practices.`
-        : `Removed "${activity.title}" from saved practices.`
-    );
-    setTimeout(() => setFeedbackSuccessNotice(null), 3000);
+    setPendingFeedback(updated);
+    setFeedbackSaveError(null);
+    try {
+      await onSaveFeedback(updated);
+      setPendingFeedback(null);
+      setFeedbackSuccessNotice(
+        updated.isSaved
+          ? `Saved "${activity.title}" to your grounding practices.`
+          : `Removed "${activity.title}" from saved practices.`
+      );
+      setTimeout(() => setFeedbackSuccessNotice(null), 3000);
+    } catch (error) {
+      setFeedbackSaveError(error instanceof Error ? error.message : "Activity could not be saved.");
+    }
   };
 
   return (
@@ -187,6 +204,15 @@ export const ActivitiesView: React.FC<ActivitiesViewProps> = ({
         />
 
         {/* Feedback Alert Notice */}
+        {feedbackSaveError && pendingFeedback && (
+          <div role="alert" className="flex items-center gap-2 rounded-2xl border border-[#B86B6B]/50 bg-[#B86B6B]/15 p-3 text-xs text-[#E7A3A3]">
+            <AlertCircle className="h-4 w-4 shrink-0" />
+            <span className="flex-1">{feedbackSaveError}</span>
+            <button type="button" onClick={() => void onSaveFeedback(pendingFeedback).then(() => { setPendingFeedback(null); setFeedbackSaveError(null); }).catch((error) => setFeedbackSaveError(error instanceof Error ? error.message : "Retry failed."))} className="rounded-lg border border-current px-2 py-1 font-semibold">
+              Retry Save
+            </button>
+          </div>
+        )}
         {feedbackSuccessNotice && (
           <div className="p-3 bg-[#6E9A7B]/15 border border-[#6E9A7B]/40 rounded-2xl text-xs text-[#6E9A7B] flex items-center space-x-2 animate-fade-in">
             <CheckCircle2 className="w-4 h-4 shrink-0" />

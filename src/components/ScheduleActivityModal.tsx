@@ -22,6 +22,7 @@ import {
   formatTimeToHHMM,
   formatHumanReadable,
 } from "../utils/dateParser";
+import { authenticatedFetch } from "../api";
 
 interface ScheduleActivityModalProps {
   isOpen: boolean;
@@ -106,14 +107,19 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
   // Search nearby places on demand
   const handleSearchPlaces = async () => {
     if (!venueSearchInput.trim()) return;
+    if (!locationName?.trim()) {
+      setErrorNotice("Add a city in Profile or allow location access before searching nearby places.");
+      return;
+    }
+    setErrorNotice(null);
     setIsSearchingPlaces(true);
     try {
-      const res = await fetch("/api/maps/places-search", {
+      const res = await authenticatedFetch("/api/maps/places-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: venueSearchInput.trim(),
-          location: locationName || "East Surabaya",
+          location: locationName,
           maxResults: 4,
         }),
       });
@@ -129,9 +135,12 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
             setCustomLocationText(`${sorted[0].name}, ${sorted[0].address}`);
           }
         }
+      } else {
+        const data = await res.json().catch(() => ({}));
+        setErrorNotice(data.error || "Nearby places could not be loaded. Please retry.");
       }
     } catch (err) {
-      console.warn("Places search error:", err);
+      setErrorNotice(err instanceof Error ? err.message : "Nearby places could not be loaded. Please retry.");
     } finally {
       setIsSearchingPlaces(false);
     }
@@ -284,7 +293,7 @@ export const ScheduleActivityModal: React.FC<ScheduleActivityModalProps> = ({
               </label>
             </div>
             <span className="text-[10px] text-[#B7AFA7] bg-[#211E1B] px-2 py-0.5 rounded-md border border-[#38322D]">
-              Near {locationName || "East Surabaya"}
+              {locationName ? `Near ${locationName}` : "Location required"}
             </span>
           </div>
 

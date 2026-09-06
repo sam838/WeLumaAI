@@ -29,43 +29,26 @@ declare global {
   }
 }
 
-const STORAGE_TOKEN_KEY = "gemini_journal_gcal_token";
-const STORAGE_EXPIRES_KEY = "gemini_journal_gcal_token_expires";
 const LOCAL_REMINDERS_KEY = "gemini_journal_local_reminders";
+let inMemoryAccessToken: string | null = null;
+let inMemoryTokenExpiresAt = 0;
 
 export function getStoredToken(): string | null {
-  try {
-    const token = localStorage.getItem(STORAGE_TOKEN_KEY);
-    const expires = localStorage.getItem(STORAGE_EXPIRES_KEY);
-    if (token && expires) {
-      const expiresAt = parseInt(expires, 10);
-      if (Date.now() < expiresAt - 60000) {
-        return token;
-      }
-    }
-  } catch (e) {
-    console.error("Failed to read stored calendar token:", e);
+  if (inMemoryAccessToken && Date.now() < inMemoryTokenExpiresAt - 60_000) {
+    return inMemoryAccessToken;
   }
+  clearStoredToken();
   return null;
 }
 
 export function saveStoredToken(token: string, expiresInSeconds: number) {
-  try {
-    const expiresAt = Date.now() + expiresInSeconds * 1000;
-    localStorage.setItem(STORAGE_TOKEN_KEY, token);
-    localStorage.setItem(STORAGE_EXPIRES_KEY, expiresAt.toString());
-  } catch (e) {
-    console.error("Failed to save calendar token:", e);
-  }
+  inMemoryAccessToken = token;
+  inMemoryTokenExpiresAt = Date.now() + expiresInSeconds * 1000;
 }
 
 export function clearStoredToken() {
-  try {
-    localStorage.removeItem(STORAGE_TOKEN_KEY);
-    localStorage.removeItem(STORAGE_EXPIRES_KEY);
-  } catch (e) {
-    console.error("Failed to clear calendar token:", e);
-  }
+  inMemoryAccessToken = null;
+  inMemoryTokenExpiresAt = 0;
 }
 
 export async function requestGoogleCalendarAuth(

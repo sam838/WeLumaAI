@@ -1518,7 +1518,9 @@ export const JournalView: React.FC<JournalViewProps> = ({
       <ScheduleActivityModal
         isOpen={modalActivityState.isOpen}
         activity={modalActivityState.activity}
-        locationName="East Surabaya"
+        locationName={[user.profile?.city, user.profile?.province, user.profile?.countryStay]
+          .filter(Boolean)
+          .join(", ")}
         onClose={() =>
           setModalActivityState({
             isOpen: false,

@@ -19,37 +19,117 @@ service cloud.firestore {
       return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isOptionalString(data, field, maxSize) {
+      return !(field in data) || (data[field] is string && data[field].size() <= maxSize);
+    }
+
+    function isValidProfile(data) {
+      return data.keys().hasOnly([
+        'name', 'dob', 'nationality', 'countryStay', 'province', 'city', 'gender',
+        'photoURL', 'religion', 'culturalBeliefs', 'timezone', 'locationInfo',
+        'primaryGoals', 'groundingActivities', 'activityPreferences',
+        'storedPreferences', 'latestCheckIn', 'dailyReminder',
+        'onboardingCompleted', 'createdAt', 'updatedAt'
+      ])
+      && isOptionalString(data, 'name', 200)
+      && isOptionalString(data, 'city', 200)
+      && isOptionalString(data, 'culturalBeliefs', 2000)
+      && (!('primaryGoals' in data) || (data.primaryGoals is list && data.primaryGoals.size() <= 30))
+      && (!('groundingActivities' in data) || (data.groundingActivities is list && data.groundingActivities.size() <= 30))
+      && (!('storedPreferences' in data) || (data.storedPreferences is list && data.storedPreferences.size() <= 100))
+      && (!('onboardingCompleted' in data) || data.onboardingCompleted is bool)
+      && (!('createdAt' in data) || data.createdAt is int)
+      && (!('updatedAt' in data) || data.updatedAt is int);
+    }
+
+    function isValidInteraction(data, userId, interactionId) {
+      return data.keys().hasOnly([
+        'id', 'userId', 'title', 'rawText', 'mode', 'depth', 'domains', 'mood',
+        'energy', 'stress', 'sleepHours', 'tags', 'messages', 'summary', 'themes',
+        'analysis', 'modelUsed', 'usage', 'createdAt', 'updatedAt'
+      ])
+      && data.id == interactionId
+      && data.userId == userId
+      && data.title is string && data.title.size() <= 200
+      && (!('rawText' in data) || (data.rawText is string && data.rawText.size() <= 100000))
+      && data.messages is list && data.messages.size() <= 100
+      && data.createdAt is int && data.updatedAt is int;
+    }
+
+    function isValidRoutine(data, userId, routineId) {
+      return data.keys().hasOnly([
+        'id', 'userId', 'name', 'domain', 'timeOfDay', 'targetTime',
+        'durationMinutes', 'recurrence', 'daysOfWeek', 'reminderEnabled',
+        'location', 'completedToday', 'lastCompletedDate', 'createdAt', 'updatedAt'
+      ])
+      && data.id == routineId && data.userId == userId
+      && data.name is string && data.name.size() <= 200
+      && data.durationMinutes is int && data.durationMinutes > 0 && data.durationMinutes <= 1440
+      && data.daysOfWeek is list && data.daysOfWeek.size() <= 7
+      && data.reminderEnabled is bool && data.completedToday is bool
+      && data.createdAt is int && data.updatedAt is int;
+    }
+
+    function isValidActivity(data, activityId) {
+      return data.keys().hasOnly([
+        'id', 'title', 'domain', 'category', 'description', 'reason',
+        'energyRequired', 'durationMinutes', 'tags', 'suggestedTiming',
+        'locationType', 'feedback', 'isSaved', 'isCustomAiGenerated', 'updatedAt'
+      ])
+      && data.id == activityId
+      && data.title is string && data.title.size() <= 200
+      && data.description is string && data.description.size() <= 5000
+      && data.reason is string && data.reason.size() <= 5000
+      && data.durationMinutes is int && data.durationMinutes > 0 && data.durationMinutes <= 1440
+      && data.tags is list && data.tags.size() <= 30
+      && data.updatedAt is int;
+    }
+
+    function isValidCheckIn(data, checkInId) {
+      return data.keys().hasOnly(['date', 'mood', 'energy', 'stress', 'notes', 'updatedAt'])
+      && data.date == checkInId
+      && data.mood is string && data.mood.size() <= 40
+      && data.energy is int && data.energy >= 1 && data.energy <= 5
+      && data.stress is int && data.stress >= 1 && data.stress <= 5
+      && isOptionalString(data, 'notes', 2000)
+      && data.updatedAt is int;
+    }
+
     // User Profile Document (/users/{userId})
     match /users/{userId} {
       allow get, list: if isOwner(userId);
-      allow create, update: if isOwner(userId);
+      allow create, update: if isOwner(userId) && isValidProfile(request.resource.data);
       allow delete: if isOwner(userId);
 
       // User-isolated Journal Interactions
       match /interactions/{interactionId} {
         allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(interactionId);
+        allow create, update: if isOwner(userId) && isValidId(interactionId)
+          && isValidInteraction(request.resource.data, userId, interactionId);
         allow delete: if isOwner(userId) && isValidId(interactionId);
       }
 
       // User-isolated Routines
       match /routines/{routineId} {
         allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(routineId);
+        allow create, update: if isOwner(userId) && isValidId(routineId)
+          && isValidRoutine(request.resource.data, userId, routineId);
         allow delete: if isOwner(userId) && isValidId(routineId);
       }
 
       // User-isolated Activity Preferences & Saved Activities
       match /activities/{activityId} {
         allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(activityId);
+        allow create, update: if isOwner(userId) && isValidId(activityId)
+          && isValidActivity(request.resource.data, activityId);
         allow delete: if isOwner(userId) && isValidId(activityId);
       }
 
       // User-isolated Daily Check-Ins
       match /checkins/{checkInId} {
         allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(checkInId);
+        allow create, update: if isOwner(userId) && isValidId(checkInId)
+          && isValidCheckIn(request.resource.data, checkInId);
         allow delete: if isOwner(userId) && isValidId(checkInId);
       }
     }
